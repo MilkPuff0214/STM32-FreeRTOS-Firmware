@@ -2,6 +2,7 @@
 
 #include "bsp_led.h"
 
+// 72 MHz的含义是每秒 72,000,000 个时钟周期
 static void delay_ms(uint32_t milliseconds)
 {
     const uint32_t ticks_per_millisecond = SystemCoreClock / 1000U;
@@ -15,7 +16,7 @@ static void delay_ms(uint32_t milliseconds)
 
     SysTick->LOAD = ticks_per_millisecond - 1U;
     SysTick->VAL = 0U;
-    SysTick->CTRL = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;
+    SysTick->CTRL = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;   //使用使用处理器时钟作为计数时钟
 
     for (uint32_t elapsed = 0U; elapsed < milliseconds; ++elapsed)
     {
