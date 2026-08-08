@@ -1,41 +1,36 @@
-#include <stdint.h>
+#include "FreeRTOS.h"
+#include "task.h"
 
 #include "bsp_led.h"
-
-// 72 MHz的含义是每秒 72,000,000 个时钟周期
-static void delay_ms(uint32_t milliseconds)
-{
-    const uint32_t ticks_per_millisecond = SystemCoreClock / 1000U;
-
-    if ((ticks_per_millisecond == 0U) || (ticks_per_millisecond > 0x01000000U))
-    {
-        while (1)
-        {
-        }
-    }
-
-    SysTick->LOAD = ticks_per_millisecond - 1U;
-    SysTick->VAL = 0U;
-    SysTick->CTRL = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;   //使用使用处理器时钟作为计数时钟
-
-    for (uint32_t elapsed = 0U; elapsed < milliseconds; ++elapsed)
-    {
-        while ((SysTick->CTRL & SysTick_CTRL_COUNTFLAG_Msk) == 0U)
-        {
-        }
-    }
-
-    SysTick->CTRL = 0U;
-    SysTick->VAL = 0U;
-}
+#include "app_led_task.h"
 
 int main(void)
 {
+    BaseType_t xTaskCreateResult;
+    /* 初始化LED的GPIO */
     LED_GPIO_Config();
 
-    while (1)
+    /* 创建LED任务 */
+    xTaskCreateResult = xTaskCreate(
+        vLedTask, 
+        "LED", 
+        configMINIMAL_STACK_SIZE, 
+        NULL, 
+        tskIDLE_PRIORITY + 1, 
+        NULL);
+
+    if (xTaskCreateResult != pdPASS)
     {
-        LED1_TOGGLE;
-        delay_ms(500U);
+        for (;;)
+        {
+        }
+    }
+    /* 启动调度器 */
+    vTaskStartScheduler();
+
+    /* 如果调度器启动失败，程序会运行到这里 */
+    for (;;)
+    {
+        /* 可以在这里添加错误处理代码 */
     }
 }

@@ -18,21 +18,40 @@ add_executable(firmware
     Libraries/CMSIS/system_stm32f10x.c
     Libraries/FWlib/src/stm32f10x_gpio.c
     Libraries/FWlib/src/stm32f10x_rcc.c
-    User/led/bsp_led.c
+    
+    # FreeRTOS Kernel V11.3.0 minimal sources.
+    Libraries/FreeRTOS-Kernel/tasks.c
+    Libraries/FreeRTOS-Kernel/list.c
+    Libraries/FreeRTOS-Kernel/portable/GCC/ARM_CM3/port.c
+    Libraries/FreeRTOS-Kernel/portable/MemMang/heap_4.c
+
+    # Application-side FreeRTOS integration.
+    User/rtos/freertos_hooks.c
+
+    # Application tasks.
+    User/app/led/app_led_task.c
+
+    # Board support package.
+    User/bsp/led/bsp_led.c
+
     User/main.c
+
 )
 
 # 设置目标属性
 set_target_properties(firmware PROPERTIES
-    OUTPUT_NAME firmware
-    SUFFIX ".elf"
+    SUFFIX ".elf"   # 生成的固件文件后缀名为 .elf
 )
 
 target_include_directories(firmware PRIVATE
     Libraries/CMSIS
     Libraries/FWlib/inc
     User
-    User/led
+    Libraries/FreeRTOS-Kernel/include
+    Libraries/FreeRTOS-Kernel/portable/GCC/ARM_CM3
+
+    User/bsp/led
+    User/app/led
 )
 
 target_compile_definitions(firmware PRIVATE
@@ -50,7 +69,7 @@ target_compile_options(firmware PRIVATE
     -fdata-sections         # 每份数据也尽量单独放 section
     -fno-common             # 不允许全局变量在多个文件中重复定义
     -ffreestanding          # 裸机环境
-    -Wa,--noexecstack       # Wa: 传给汇编器的参数 
+    -Wa,--noexecstack       # Wa: 传给汇编器的参数 ，让当前工程新生成的单个.o声明不需要可执行栈
     -Wall
     -Wextra
     $<$<COMPILE_LANGUAGE:C>:-std=c11>
@@ -74,11 +93,12 @@ target_link_options(firmware PRIVATE
     -nostartfiles       # 不用 GCC 默认启动文件
     --specs=nano.specs
     --specs=nosys.specs
+    -Wl,-z,noexecstack
 # 告诉链接器：使用指定的 linker script
 # 链接脚本解决的是：
 # .text、.data、.bss、栈、堆等最终应该放到 STM32 的哪个地址。
     -T${CMAKE_CURRENT_SOURCE_DIR}/linker/STM32F103ZETx_FLASH.ld     # 指定链接脚本，这是 STM32 链接最关键的一项
-    -Wl,--gc-sections       # 把参数传给链接器
+    -Wl,--gc-sections       # wl:把参数传给链接器，丢弃未使用的函数和数据
     -Wl,--print-memory-usage    # 参数含义：构建结束时打印 Flash/RAM 使用情况
     -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/firmware.map,--cref
 )
