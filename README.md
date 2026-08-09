@@ -72,7 +72,8 @@ firmware/
 │   │   ├── portable/GCC/ARM_CM3/      GNU GCC Cortex-M3 端口
 │   │   ├── portable/MemMang/heap_4.c  动态内存管理实现
 │   │   ├── tasks.c                    任务和调度器核心
-│   │   └── list.c                     内核链表实现
+│   │   ├── list.c                     内核链表实现
+│   │   └── queue.c                    Queue、Semaphore和Mutex的底层实现
 │   └── FWlib/                         STM32F10x 标准外设库
 ├── User/
 │   ├── main.c                         程序入口；后续只保留初始化、创建任务和启动调度器
@@ -80,13 +81,16 @@ firmware/
 │   ├── rtos/                          应用与FreeRTOS内核之间的集成层
 │   │   └── freertos_hooks.c           Malloc/栈溢出Hook，已由用户创建并通过语法检查
 │   ├── app/                           应用Task和业务编排，按功能域继续分子目录
-│   │   └── led/                       LED应用任务：app_led_task.c/.h已编写并加入CMake
+│   │   ├── event/                     Key Task与LED Task共享的按键事件契约
+│   │   ├── key/                       按键周期扫描、软件消抖和Queue生产者
+│   │   └── led/                       阻塞接收Queue事件并控制RGB LED
 │   └── bsp/                           板级支持层，按外设或器件继续分子目录
+│       ├── key/                       PA0、PC13按键非阻塞读取BSP
 │       └── led/                       霸道 V2 RGB LED BSP：bsp_led.c/.h
 └── build/                             构建输出，不纳入 Git
 ```
 
-当前 CMake 目标从 `User/bsp/led/` 编译裸机LED BSP，同时编译FreeRTOS最小依赖：`tasks.c`、`list.c`、GNU Cortex-M3 `port.c`、`heap_4.c` 和应用Hook。Queue、Timer、Event Group、Stream Buffer、按键、外部中断、串口和其他未验证模块仍未加入构建，避免提前扩大最小闭环。
+当前 CMake 目标已经编译 `tasks.c`、`list.c`、`queue.c`、GNU Cortex-M3 `port.c`、`heap_4.c` 和应用Hook。应用侧已形成 `Key Task → AppKeyEvent_t Queue → LED Task` 的最小生产者—消费者闭环：Key Task周期读取PA0/PC13并完成软件消抖，只发送稳定按下事件；LED Task阻塞等待Queue并根据KEY1/KEY2事件翻转绿灯或蓝灯。Timer、Event Group、Stream Buffer、外部中断、ADC和串口Console尚未加入构建。
 
 新增固件代码按职责落位，不能仅为省事堆在 `User/` 根目录：`Libraries/` 保存第三方内核和厂商库；`User/rtos/` 保存FreeRTOS应用侧Hook与适配；`User/app/<功能域>/` 保存Task入口和业务编排；`User/bsp/<外设或器件>/` 保存板级驱动。`main.c` 和全工程配置头可保留为根级入口，但不得逐步演变成业务实现集合。依赖方向应保持为：`main` 只调用必要的BSP初始化、应用模块注册和调度器启动，`app → bsp + FreeRTOS API`，`bsp → FWlib/CMSIS/硬件`；底层不得反向依赖应用层。
 
@@ -102,7 +106,7 @@ firmware/
 - 外部高速晶振：8 MHz；`SystemInit()` 将系统时钟配置为 72 MHz。
 - 板载 RGB LED：共阳极，GPIO 输出低电平时点亮。
 - 红灯：PB5；绿灯：PB0；蓝灯：PB1。
-- 裸机基线程序每 500 ms 翻转一次红灯；当前FreeRTOS Demo源码改为每 2000 ms 翻转一次，因此完整亮灭周期约为 4 s。
+- 裸机基线程序每500 ms翻转一次红灯；首个FreeRTOS LED Task曾使用2000 ms阻塞延时完成调度验证。当前Queue Demo已改为事件驱动：KEY1稳定按下事件翻转绿灯，KEY2稳定按下事件翻转蓝灯，LED Task在无事件时阻塞等待Queue。
 - 上电测试前需要确认 RGB LED 供电跳帽 J73 已接通。
 - 调试下载使用 CMSIS-DAP，通过开发板 SWD 接口连接。
 
@@ -376,25 +380,29 @@ PB5 红灯约每 2000 ms 翻转一次
 | 7. 改造入口程序 | 删除裸机 SysTick 忙等，创建 LED Task 并启动调度器 | 已由用户完成并成功生成ELF |
 | 8. 构建和静态检查 | 检查异常符号、内存占用、映射文件和编译警告 | 符号、Heap、向量表、内存和GNU_STACK已复核；`main.c`最新注释晚于ELF，GDB前需再构建同步行号 |
 | 9. 烧录和 GDB 验证 | 验证调度器、Tick、上下文切换、任务阻塞和错误 Hook | 已命中`main()`和`xTaskCreate()`；六个Task创建实参与配置一致，继续验证动态创建和调度路径 |
-| 10. 最小 Demo 验收 | 连续运行并记录结果，形成可回退的 Git 基线 | 待执行 |
+| 10. 最小 Demo 验收 | 连续运行并记录结果，形成可回退的 Git 基线 | 按键BSP、软件消抖、Queue生产者和LED消费者已完成构建；提交前由用户确认最终实机行为并形成Git基线 |
 
 每完成一步，都应把实际命令、结果、遇到的问题和验证结论补充到本节，不能提前把计划写成已完成结果。
 
 ### 下一阶段FreeRTOS学习路线
 
-首个LED Task完成硬件验收后，按以下顺序扩展，不在一次变更中同时启用全部同步机制：
+首个LED Task已经扩展为按键Queue Demo。后续继续按单一机制逐步验收，不在一次变更中同时启用全部外设和同步机制：
 
 ```text
-非阻塞按键BSP和轮询Task
+非阻塞按键BSP和轮询Task（已完成构建）
     ↓
-Queue传递按键事件
+Queue传递按键事件（已完成构建）
+    ↓
+USART1 TX/RX DMA与最小Console
+    ↓
+双路ADC数据通过Queue发送到Serial TX Task
     ↓
 Binary Semaphore完成EXTI到Task同步
     ↓
 Mutex保护真实共享资源
 ```
 
-历史 `User/Key/`和 `User/exti/`示例目前未加入CMake。接入前必须迁移到当前分层、去除等待按键释放的忙循环，并把EXTI的NVIC分组和中断优先级改为满足FreeRTOS `FromISR`边界的配置。具体原理和阶段验收见 [FreeRTOS学习.md](FreeRTOS学习.md#25-第二阶段按键queuesemaphore-与-mutex)。
+历史 `User/Key/`阻塞扫描示例已由分层后的 `User/bsp/key/`和 `User/app/key/`替代，历史EXTI与串口示例不直接加入当前CMake。下一阶段将重新建立 `User/bsp/usart/`和应用Console，使用USART1 TX/RX DMA、单一串口发送所有者和有界消息Queue；EXTI后续仍需使用统一NVIC分组，并满足FreeRTOS `FromISR`优先级边界。具体原理和阶段验收见 [FreeRTOS学习.md](FreeRTOS学习.md#25-第二阶段按键queuesemaphore-与-mutex)。
 
 ### 3. 官方源码下载和版本核验
 

@@ -29,7 +29,7 @@ LED Task的TCB和栈
 剩余空闲空间
  */
 #define configTOTAL_HEAP_SIZE                      ( 8U * 1024U )   //总堆大小为8KB
-#define configMINIMAL_STACK_SIZE                   128U     //Idle Task栈大小:128 words = 512 bytes，单位为words，1 word=4 bytes
+#define configMINIMAL_STACK_SIZE                   128U     //Idle Task栈大小:128 * 4  = 512 bytes，单位为words，1 word=4 bytes
 #define configAPPLICATION_ALLOCATED_HEAP           0        //表示由 heap_4.c 自己定义 ucHeap[]
 #define configSTACK_ALLOCATION_FROM_SEPARATE_HEAP  0        //表示任务的TCB和任务栈都从同一个FreeRTOS Heap分配
 #define configHEAP_CLEAR_MEMORY_ON_FREE            0        //释放内存时不清零，减少执行开销

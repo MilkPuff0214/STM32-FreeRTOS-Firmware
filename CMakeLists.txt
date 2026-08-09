@@ -1,8 +1,8 @@
-cmake_minimum_required(VERSION 3.22)                    #Ö¸Ã÷cmakeµÄ×îµÍ°æ±¾ÒªÇó
+cmake_minimum_required(VERSION 3.22)                    #æŒ‡æ˜cmakeçš„æœ€ä½ç‰ˆæœ¬è¦æ±‚
 
-project(stm32f103_firmware LANGUAGES C ASM)             #ËµÃ÷ÏîÄ¿Ãû³ÆºÍÊ¹ÓÃµÄÓïÑÔ£ºCºÍ»ã±à
+project(stm32f103_firmware LANGUAGES C ASM)             #è¯´æ˜é¡¹ç›®åç§°å’Œä½¿ç”¨çš„è¯­è¨€ï¼šCå’Œæ±‡ç¼–
 
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)          #if (Ô´ÂëÄ¿Â¼ == ¹¹½¨Ä¿Â¼) STREQUAL£º¡°string equal¡±
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)          #if (æºç ç›®å½• == æ„å»ºç›®å½•) STREQUALï¼šâ€œstring equalâ€
     message(FATAL_ERROR "In-source builds are not supported. Use: cmake -S . -B build")
 endif()
 
@@ -10,9 +10,9 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
 
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)   #Õâ¸ö JSON ÎÄ¼ş»á¼ÇÂ¼Ã¿Ò»¸ö .c/.cpp ÎÄ¼şÕæÕıÊ¹ÓÃµÄ±àÒëÃüÁî
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)   #è¿™ä¸ª JSON æ–‡ä»¶ä¼šè®°å½•æ¯ä¸€ä¸ª .c/.cpp æ–‡ä»¶çœŸæ­£ä½¿ç”¨çš„ç¼–è¯‘å‘½ä»¤
 
-# ÕâÌõÃüÁî´´½¨ÁËÒ»¸ö CMake target
+# è¿™æ¡å‘½ä»¤åˆ›å»ºäº†ä¸€ä¸ª CMake target
 add_executable(firmware
     Libraries/CMSIS/startup/gcc/startup_stm32f103xe.S
     Libraries/CMSIS/system_stm32f10x.c
@@ -24,23 +24,27 @@ add_executable(firmware
     Libraries/FreeRTOS-Kernel/list.c
     Libraries/FreeRTOS-Kernel/portable/GCC/ARM_CM3/port.c
     Libraries/FreeRTOS-Kernel/portable/MemMang/heap_4.c
+    # Queueã€Semaphoreå’ŒMutexå…±ç”¨çš„åº•å±‚å®ç°ã€‚
+    Libraries/FreeRTOS-Kernel/queue.c
 
     # Application-side FreeRTOS integration.
     User/rtos/freertos_hooks.c
 
     # Application tasks.
     User/app/led/app_led_task.c
+    User/app/key/app_key_task.c
 
     # Board support package.
     User/bsp/led/bsp_led.c
+    User/bsp/key/bsp_key.c
 
     User/main.c
 
 )
 
-# ÉèÖÃÄ¿±êÊôĞÔ
+# è®¾ç½®ç›®æ ‡å±æ€§
 set_target_properties(firmware PROPERTIES
-    SUFFIX ".elf"   # Éú³ÉµÄ¹Ì¼şÎÄ¼şºó×ºÃûÎª .elf
+    SUFFIX ".elf"   # ç”Ÿæˆçš„å›ºä»¶æ–‡ä»¶åç¼€åä¸º .elf
 )
 
 target_include_directories(firmware PRIVATE
@@ -52,6 +56,10 @@ target_include_directories(firmware PRIVATE
 
     User/bsp/led
     User/app/led
+
+    User/bsp/key
+    User/app/key
+    User/app/event
 )
 
 target_compile_definitions(firmware PRIVATE
@@ -59,17 +67,17 @@ target_compile_definitions(firmware PRIVATE
     USE_STDPERIPH_DRIVER
 )
 
-# ¸ø firmware Õâ¸ö target µÄ¡°Ô´ÎÄ¼ş±àÒë¹ı³Ì¡±
-# Ìí¼ÓÏÂÃæÕâĞ© GCC ²ÎÊı¡£
+# ç»™ firmware è¿™ä¸ª target çš„â€œæºæ–‡ä»¶ç¼–è¯‘è¿‡ç¨‹â€
+# æ·»åŠ ä¸‹é¢è¿™äº› GCC å‚æ•°ã€‚
 target_compile_options(firmware PRIVATE
-    -mcpu=cortex-m3         # CPU ÊÇ Cortex-M3
-    -mthumb                 # Éú³É Thumb Ö¸Áî
+    -mcpu=cortex-m3         # CPU æ˜¯ Cortex-M3
+    -mthumb                 # ç”Ÿæˆ Thumb æŒ‡ä»¤
     -mfloat-abi=soft
-    -ffunction-sections     # Ã¿¸öº¯Êı¾¡Á¿µ¥¶À·ÅÒ»¸ö section
-    -fdata-sections         # Ã¿·İÊı¾İÒ²¾¡Á¿µ¥¶À·Å section
-    -fno-common             # ²»ÔÊĞíÈ«¾Ö±äÁ¿ÔÚ¶à¸öÎÄ¼şÖĞÖØ¸´¶¨Òå
-    -ffreestanding          # Âã»ú»·¾³
-    -Wa,--noexecstack       # Wa: ´«¸ø»ã±àÆ÷µÄ²ÎÊı £¬ÈÃµ±Ç°¹¤³ÌĞÂÉú³ÉµÄµ¥¸ö.oÉùÃ÷²»ĞèÒª¿ÉÖ´ĞĞÕ»
+    -ffunction-sections     # æ¯ä¸ªå‡½æ•°å°½é‡å•ç‹¬æ”¾ä¸€ä¸ª section
+    -fdata-sections         # æ¯ä»½æ•°æ®ä¹Ÿå°½é‡å•ç‹¬æ”¾ section
+    -fno-common             # ä¸å…è®¸å…¨å±€å˜é‡åœ¨å¤šä¸ªæ–‡ä»¶ä¸­é‡å¤å®šä¹‰
+    -ffreestanding          # è£¸æœºç¯å¢ƒ
+    -Wa,--noexecstack       # Wa: ä¼ ç»™æ±‡ç¼–å™¨çš„å‚æ•° ï¼Œè®©å½“å‰å·¥ç¨‹æ–°ç”Ÿæˆçš„å•ä¸ª.oå£°æ˜ä¸éœ€è¦å¯æ‰§è¡Œæ ˆ
     -Wall
     -Wextra
     $<$<COMPILE_LANGUAGE:C>:-std=c11>
@@ -78,32 +86,32 @@ target_compile_options(firmware PRIVATE
 )
 
 # .c / .S
-#       ¡ı
+#       â†“
 # arm-none-eabi-gcc
-# + ÉÏÃæÕâĞ©²ÎÊı
-#       ¡ı
+# + ä¸Šé¢è¿™äº›å‚æ•°
+#       â†“
 # .o
 
 
-# target_link_options() ÉèÖÃµÄ¾ÍÊÇÁ´½Ó½×¶ÎµÄ²ÎÊı¡£
+# target_link_options() è®¾ç½®çš„å°±æ˜¯é“¾æ¥é˜¶æ®µçš„å‚æ•°ã€‚
 target_link_options(firmware PRIVATE
     -mcpu=cortex-m3
     -mthumb
     -mfloat-abi=soft
-    -nostartfiles       # ²»ÓÃ GCC Ä¬ÈÏÆô¶¯ÎÄ¼ş
+    -nostartfiles       # ä¸ç”¨ GCC é»˜è®¤å¯åŠ¨æ–‡ä»¶
     --specs=nano.specs
     --specs=nosys.specs
     -Wl,-z,noexecstack
-# ¸æËßÁ´½ÓÆ÷£ºÊ¹ÓÃÖ¸¶¨µÄ linker script
-# Á´½Ó½Å±¾½â¾öµÄÊÇ£º
-# .text¡¢.data¡¢.bss¡¢Õ»¡¢¶ÑµÈ×îÖÕÓ¦¸Ã·Åµ½ STM32 µÄÄÄ¸öµØÖ·¡£
-    -T${CMAKE_CURRENT_SOURCE_DIR}/linker/STM32F103ZETx_FLASH.ld     # Ö¸¶¨Á´½Ó½Å±¾£¬ÕâÊÇ STM32 Á´½Ó×î¹Ø¼üµÄÒ»Ïî
-    -Wl,--gc-sections       # wl:°Ñ²ÎÊı´«¸øÁ´½ÓÆ÷£¬¶ªÆúÎ´Ê¹ÓÃµÄº¯ÊıºÍÊı¾İ
-    -Wl,--print-memory-usage    # ²ÎÊıº¬Òå£º¹¹½¨½áÊøÊ±´òÓ¡ Flash/RAM Ê¹ÓÃÇé¿ö
+# å‘Šè¯‰é“¾æ¥å™¨ï¼šä½¿ç”¨æŒ‡å®šçš„ linker script
+# é“¾æ¥è„šæœ¬è§£å†³çš„æ˜¯ï¼š
+# .textã€.dataã€.bssã€æ ˆã€å †ç­‰æœ€ç»ˆåº”è¯¥æ”¾åˆ° STM32 çš„å“ªä¸ªåœ°å€ã€‚
+    -T${CMAKE_CURRENT_SOURCE_DIR}/linker/STM32F103ZETx_FLASH.ld     # æŒ‡å®šé“¾æ¥è„šæœ¬ï¼Œè¿™æ˜¯ STM32 é“¾æ¥æœ€å…³é”®çš„ä¸€é¡¹
+    -Wl,--gc-sections       # wl:æŠŠå‚æ•°ä¼ ç»™é“¾æ¥å™¨ï¼Œä¸¢å¼ƒæœªä½¿ç”¨çš„å‡½æ•°å’Œæ•°æ®
+    -Wl,--print-memory-usage    # å‚æ•°å«ä¹‰ï¼šæ„å»ºç»“æŸæ—¶æ‰“å° Flash/RAM ä½¿ç”¨æƒ…å†µ
     -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/firmware.map,--cref
 )
 
-# ELF Éú³ÉÖ®ºóÔÙ×ö¶îÍâ¹¤×÷
+# ELF ç”Ÿæˆä¹‹åå†åšé¢å¤–å·¥ä½œ
 add_custom_command(TARGET firmware POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O ihex
             $<TARGET_FILE:firmware>

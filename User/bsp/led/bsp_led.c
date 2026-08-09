@@ -4,13 +4,13 @@
   * @author  fire
   * @version V1.0
   * @date    2013-xx-xx
-  * @brief   ledÓ¦ÓÃº¯Êý½Ó¿Ú
+  * @brief   ledåº”ç”¨å‡½æ•°æŽ¥å£
   ******************************************************************************
   * @attention
   *
-  * ÊµÑéÆ½Ì¨:±ü»ð F103-°ÔµÀ STM32 ¿ª·¢°å 
-  * ÂÛÌ³    :http://www.firebbs.cn
-  * ÌÔ±¦    :https://fire-stm32.taobao.com
+  * å®žéªŒå¹³å°:ç§‰ç« F103-éœ¸é“ STM32 å¼€å‘æ¿ 
+  * è®ºå›    :http://www.firebbs.cn
+  * æ·˜å®    :https://fire-stm32.taobao.com
   *
   ******************************************************************************
   */
@@ -18,48 +18,48 @@
 #include "bsp_led.h"   
 
  /**
-  * @brief  ³õÊ¼»¯¿ØÖÆLEDµÄIO
-  * @param  ÎÞ
-  * @retval ÎÞ
+  * @brief  åˆå§‹åŒ–æŽ§åˆ¶LEDçš„IO
+  * @param  æ— 
+  * @retval æ— 
   */
 void LED_GPIO_Config(void)
 {		
-		/*¶¨ÒåÒ»¸öGPIO_InitTypeDefÀàÐÍµÄ½á¹¹Ìå*/
+		/*å®šä¹‰ä¸€ä¸ªGPIO_InitTypeDefç±»åž‹çš„ç»“æž„ä½“*/
 		GPIO_InitTypeDef GPIO_InitStructure;
 
-		/*¿ªÆôLEDÏà¹ØµÄGPIOÍâÉèÊ±ÖÓ*/
+		/*å¼€å¯LEDç›¸å…³çš„GPIOå¤–è®¾æ—¶é’Ÿ*/
 		RCC_APB2PeriphClockCmd( LED1_GPIO_CLK | LED2_GPIO_CLK | LED3_GPIO_CLK, ENABLE);
-		/*Ñ¡ÔñÒª¿ØÖÆµÄGPIOÒý½Å*/
+		/*é€‰æ‹©è¦æŽ§åˆ¶çš„GPIOå¼•è„š*/
 		GPIO_InitStructure.GPIO_Pin = LED1_GPIO_PIN;	
 
-		/*ÉèÖÃÒý½ÅÄ£Ê½ÎªÍ¨ÓÃÍÆÍìÊä³ö*/
+		/*è®¾ç½®å¼•è„šæ¨¡å¼ä¸ºé€šç”¨æŽ¨æŒ½è¾“å‡º*/
 		GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;   
 
-		/*ÉèÖÃÒý½ÅËÙÂÊÎª50MHz */   
+		/*è®¾ç½®å¼•è„šé€ŸçŽ‡ä¸º50MHz */   
 		GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz; 
 
-		/*µ÷ÓÃ¿âº¯Êý£¬³õÊ¼»¯GPIO*/
+		/*è°ƒç”¨åº“å‡½æ•°ï¼Œåˆå§‹åŒ–GPIO*/
 		GPIO_Init(LED1_GPIO_PORT, &GPIO_InitStructure);	
 		
-		/*Ñ¡ÔñÒª¿ØÖÆµÄGPIOÒý½Å*/
+		/*é€‰æ‹©è¦æŽ§åˆ¶çš„GPIOå¼•è„š*/
 		GPIO_InitStructure.GPIO_Pin = LED2_GPIO_PIN;
 
-		/*µ÷ÓÃ¿âº¯Êý£¬³õÊ¼»¯GPIO*/
+		/*è°ƒç”¨åº“å‡½æ•°ï¼Œåˆå§‹åŒ–GPIO*/
 		GPIO_Init(LED2_GPIO_PORT, &GPIO_InitStructure);
 		
-		/*Ñ¡ÔñÒª¿ØÖÆµÄGPIOÒý½Å*/
+		/*é€‰æ‹©è¦æŽ§åˆ¶çš„GPIOå¼•è„š*/
 		GPIO_InitStructure.GPIO_Pin = LED3_GPIO_PIN;
 
-		/*µ÷ÓÃ¿âº¯Êý£¬³õÊ¼»¯GPIOF*/
+		/*è°ƒç”¨åº“å‡½æ•°ï¼Œåˆå§‹åŒ–GPIOF*/
 		GPIO_Init(LED3_GPIO_PORT, &GPIO_InitStructure);
 
-		/* ¹Ø±ÕËùÓÐledµÆ	*/
+		/* å…³é—­æ‰€æœ‰ledç¯	*/
 		GPIO_SetBits(LED1_GPIO_PORT, LED1_GPIO_PIN);
 		
-		/* ¹Ø±ÕËùÓÐledµÆ	*/
+		/* å…³é—­æ‰€æœ‰ledç¯	*/
 		GPIO_SetBits(LED2_GPIO_PORT, LED2_GPIO_PIN);	 
     
-    /* ¹Ø±ÕËùÓÐledµÆ	*/
+    /* å…³é—­æ‰€æœ‰ledç¯	*/
 		GPIO_SetBits(LED3_GPIO_PORT, LED3_GPIO_PIN);
 }
 
