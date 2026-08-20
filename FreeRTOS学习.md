@@ -31,6 +31,8 @@
 - [23. 项目自编 C 代码风格](#23-项目自编-c-代码风格)
 - [24. 第7课：创建Task并启动调度器](#24-第7课创建task并启动调度器)
 - [25. 第二阶段：按键、Queue、Semaphore 与 Mutex](#25-第二阶段按键queuesemaphore-与-mutex)
+- [26. USART1 TX DMA 与 Task Notification](#26-usart1-tx-dma-与-task-notification)
+- [27. USART1 RX循环DMA、IDLE与Task Notification](#27-usart1-rx循环dmaidle与task-notification)
 
 ## 1. 学习目标与边界
 
@@ -139,12 +141,13 @@ firmware/Libraries/FreeRTOS-Kernel/
 │   └── heap_4.c
 ├── tasks.c
 ├── list.c
+├── queue.c
 ├── LICENSE.md
 ├── README.md
 └── History.txt
 ```
 
-当前没有复制 `queue.c`、`timers.c`、`event_groups.c`、`stream_buffer.c` 或 `croutine.c`。
+第二阶段为按键事件Queue加入了 `queue.c`。`timers.c`、`event_groups.c`、`stream_buffer.c`和 `croutine.c`仍未加入当前构建。
 
 ## 3. FreeRTOS 是什么
 
@@ -1470,16 +1473,18 @@ STM32F103ZET6 的 64 KiB SRAM 还需要容纳：
 | 0 | 裸机 LED、工具链、烧录和 GDB 基线 | 已完成实机验证 |
 | 1 | 下载并核验 FreeRTOS Kernel V11.3.0 | 已完成 |
 | 2 | 选择最小通用内核、ARM_CM3 端口和 `heap_4.c` | 已完成文件准备 |
-| 3 | 理解 FreeRTOS、Task、TCB、任务栈、状态和调度器 | 概念和 V11.3.0 源码路径已讲解，待用户自测和后续 GDB 观察 |
-| 4 | 理解 Tick、SVC、PendSV 和 Cortex-M3 上下文切换 | 已讲解 MSP/PSP、异常自动压栈、首任务启动和后续切换，待用户自测与 GDB 观察 |
-| 4A | 理解Task/IRQ优先级、NVIC分组、`BASEPRI`与`FromISR`边界 | 已完成源码级讲解和用户自测，待后续实机ISR验证 |
+| 3 | 理解 FreeRTOS、Task、TCB、任务栈、状态和调度器 | 已完成概念、源码路径、调度器运行及阻塞/唤醒实机验证 |
+| 4 | 理解 Tick、SVC、PendSV 和 Cortex-M3 上下文切换 | 已完成MSP/PSP、异常自动压栈、首任务启动和后续切换学习，调度器已在硬件运行 |
+| 4A | 理解Task/IRQ优先级、NVIC分组、`BASEPRI`与`FromISR`边界 | 已完成讲解、自测，并通过逻辑优先级6的DMA ISR调用FromISR API完成实机验证 |
 | 4B | 理解 GNU 启动文件、链接脚本和 MCU 上电流程 | 已结合当前工程讲解，待后续通过 MAP、反汇编和 GDB 验证 |
-| 5 | 理解并编写 `FreeRTOSConfig.h` | 已由用户完成首版配置并加入应用Hook，静态检查通过；运行时配置仍待最小Task验证 |
+| 5 | 理解并编写 `FreeRTOSConfig.h` | 已由用户完成配置与Hook；动态分配、Queue和Task Notification均已进入运行路径 |
 | 6 | 将最小内核加入 CMake | 已完成首次链接；`-Wl,-z,noexecstack`已在正式ELF中验证生效，`GNU_STACK`为`RW` |
-| 6A | 规范固件目录分层 | 规则已写入`AGENTS.md`；LED BSP已迁移到`User/bsp/led/`并完成构建回归，迁移后实机闪烁待复验 |
+| 6A | 规范固件目录分层 | LED、Key、USART BSP和对应应用模块均已按功能域落位并完成构建/实机回归 |
 | 7 | 用户编写 LED Task 并启动调度器 | `main.c`已调用`xTaskCreate()`和`vTaskStartScheduler()`并成功生成ELF |
 | 8 | ELF、MAP、异常符号和内存检查 | 符号、Heap、异常向量、内存边界和GNU_STACK复核通过 |
-| 9 | 烧录、GDB 和连续运行验收 | 已命中`main()`和`xTaskCreate()`；六个Task创建实参与当前配置一致，继续验证动态创建和调度路径 |
+| 9 | 烧录、GDB 和连续运行验收 | 调度器、Queue Demo及USART1 TX/RX DMA → ISR → Task Notification闭环已完成真实硬件验证 |
+| 10 | 建立有界Serial TX Queue | 私有Queue、消息复制、FIFO发送和单一TX所有权已完成构建与真实硬件验证 |
+| 11 | 建立USART1 RX循环DMA闭环 | Channel 5循环接收、IDLE通知、CNDTR位置计算、原始字节回显和缓冲区回绕已完成构建与真实硬件验证 |
 
 ## 16. 当前应掌握的核心结论
 
@@ -7836,3 +7841,475 @@ Mutex               增加持有者和优先级继承语义
 | Mutex | 只在Task上下文使用；持有范围短；所有成功Take路径最终都Give；共享资源无交叉输出 |
 
 每个阶段通过后再进入下一阶段，不用一次开启Queue、Semaphore、Mutex和EXTI。
+
+## 26. USART1 TX DMA 与 Task Notification
+
+### 26.1 本阶段解决什么问题
+
+轮询发送串口时，CPU需要反复等待USART发送数据寄存器空闲，再逐字节写入数据。DMA发送把“从内存读取字节并写入USART数据寄存器”的重复动作交给DMA控制器：
+
+```text
+Serial TX Task
+    │ 配置缓冲区地址和字节数
+    ▼
+DMA1 Channel 4
+    │ USART1_TX请求驱动逐字节搬运
+    ▼
+USART1->DR
+    │
+    ▼
+PA9 → 板载CH340G → 电脑串口工具
+```
+
+DMA只解决数据搬运问题，不负责告诉Task“本次发送已经结束”。因此本阶段还需要建立反向同步路径：
+
+```text
+DMA传输完成
+    ▼
+DMA1_Channel4_IRQHandler
+    ▼
+vTaskNotifyGiveFromISR()
+    ▼
+Serial TX Task从Blocked变为Ready
+```
+
+最终验证不是只收到一条固定字符串，而是Serial TX Task能够等待每次DMA完成、延时约1 s并再次发送。连续周期输出证明发送和完成通知两个方向都已经闭环。
+
+### 26.2 STM32F103的固定DMA映射
+
+STM32F103的DMA通道与外设请求之间存在芯片规定的固定映射，本项目使用：
+
+```text
+USART1_TX → DMA1 Channel 4
+USART1_RX → DMA1 Channel 5
+```
+
+Channel 4不是应用随意挑选的编号。当前TX配置的关键含义是：
+
+| 配置 | 当前选择 | 原因 |
+| --- | --- | --- |
+| 方向 | Memory → Peripheral | 字符串位于内存，目标是USART数据寄存器 |
+| 外设地址递增 | 禁止 | 每个字节始终写入同一个 `USART1->DR` |
+| 内存地址递增 | 允许 | DMA需要依次读取缓冲区中的每个字节 |
+| 数据宽度 | Byte | USART按字节发送8位数据 |
+| 模式 | Normal | 一个消息发送完后停止，等待Task提供下一条消息 |
+
+TX选择Normal模式，是因为每条日志或命令响应都有明确边界。Circular模式更适合连续采样或连续接收固定缓冲区；如果TX使用Circular模式，同一段字符串会在没有Task控制的情况下不断重复发送。
+
+### 26.3 DMA发送缓冲区的生命周期
+
+启动DMA是异步操作：`BspUsart1_TxDmaStart()`返回时，DMA可能还没有读取完缓冲区。因此在传输完成前必须满足：
+
+- 缓冲区仍然存在。
+- 缓冲区内容不能被生产者改写。
+- 不能释放或复用该内存。
+- 不能让另一个Task同时重配同一个DMA通道。
+
+当前固定消息使用 `static const`，其存储期覆盖整个程序运行过程，DMA读取期间不会因函数返回而失效。后续发送动态日志时，将由Serial TX Task独占一个持久发送缓冲区；其他Task只向有界日志Queue提交消息，不直接持有USART或DMA。
+
+这种设计建立了明确所有权：
+
+```text
+其他Task             只生产待发送消息
+Serial TX Task       唯一拥有TX工作缓冲区和启动DMA的权限
+DMA1 Channel 4       传输期间读取该缓冲区
+完成中断             只报告缓冲区已经可以再次使用
+```
+
+### 26.4 BSP与应用层如何分工
+
+USART BSP只依赖FWlib、CMSIS和硬件，负责：
+
+- USART1 GPIO、波特率和收发模式配置。
+- DMA1 Channel 4固定参数配置。
+- 装载本次内存地址和传输计数。
+- 检查、清除DMA完成标志并关闭普通模式通道。
+
+应用Serial模块负责：
+
+- 创建和保存Serial TX Task Handle。
+- 决定发送什么以及发送周期。
+- 在中断桥接中调用FreeRTOS `FromISR` API。
+- 在Task上下文等待完成事件并决定下一步行为。
+
+因此依赖方向保持为：
+
+```text
+app_serial_task.c → bsp_usart.c + FreeRTOS API
+bsp_usart.c       → FWlib/CMSIS/硬件
+```
+
+BSP不会包含应用头文件，也不会保存具体业务Task Handle。DMA ISR不格式化字符串、不解析命令、不等待硬件，只清状态、发送通知并按需请求调度。
+
+### 26.5 为什么中断使用逻辑优先级6
+
+当前配置规定：
+
+```text
+configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY = 5
+```
+
+STM32F103使用4个有效NVIC优先级位，逻辑优先级范围为0～15。DMA完成ISR调用了：
+
+```c
+vTaskNotifyGiveFromISR();
+```
+
+所以它必须位于允许调用FreeRTOS API的逻辑优先级5～15。本项目为DMA1 Channel 4选择逻辑优先级6：
+
+```text
+0～4   紧迫度高，但禁止调用FreeRTOS FromISR API
+5～15  紧迫度较低，允许调用当前受支持的FromISR API
+```
+
+这里的“6”不是FreeRTOS Task优先级。Task优先级数值越大越高；Cortex-M IRQ优先级数值越小越紧迫，这两套方向不能混用。
+
+### 26.6 Task Notification在TCB中保存什么
+
+启用：
+
+```c
+#define configUSE_TASK_NOTIFICATIONS 1
+```
+
+后，每个TCB会保存任务通知值和通知状态。默认通知数组只有一个槽位，可以把当前Serial TX Task的相关字段概念化为：
+
+```text
+TCB
+├── ulNotifiedValue[0]   当前累计通知值
+└── ucNotifyState[0]     未等待、正在等待或已收到通知
+```
+
+`vTaskNotifyGiveFromISR()`采用“Give”语义，把目标任务的通知值加1。如果目标任务正在等待通知，内核还会把它从Blocked状态移到Ready状态。Task Notification不是独立分配的Queue对象；发送方必须已经知道唯一目标Task Handle。
+
+这使它特别适合当前关系：
+
+```text
+一个固定DMA完成ISR → 一个固定Serial TX Task
+```
+
+### 26.7 `ulTaskNotifyTake()`的三个关键参数行为
+
+当前任务调用：
+
+```c
+ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+```
+
+如果进入函数时通知值为0，任务会被加入阻塞/延时管理结构，`ulTaskNotifyTake()`暂时不能返回。DMA硬件仍然独立工作，CPU可以运行Key Task、LED Task或Idle Task。
+
+第一个参数控制函数返回时如何消费通知值：
+
+| 当前通知值 | 参数 | 函数返回值 | 返回后的通知值 |
+| ---: | --- | ---: | ---: |
+| 1 | `pdTRUE` | 1 | 0 |
+| 3 | `pdTRUE` | 3 | 0 |
+| 3 | `pdFALSE` | 3 | 2 |
+
+因此：
+
+- `pdTRUE`表示成功取得通知后把累计通知值清零，适合只关心“至少完成过一次”。
+- `pdFALSE`表示只减1，适合按次数逐个消费累计事件。
+
+返回值是清零或减1之前的通知值。当前代码使用 `(void)`忽略返回值，是因为使用最大等待时间且只把它当作一次同步点；以后改成有限超时时，应保存返回值，`0`表示没有在限定时间内收到通知。
+
+第二个参数 `portMAX_DELAY`是Tick类型能够表达的最大等待值。当前配置没有显式启用 `INCLUDE_vTaskSuspend`，因此从严格语义看它是最大有限等待，而不是数学意义上的永远：32位Tick、1 kHz条件下约为49.7天。对当前秒级DMA实验可视为实际无限等待；若工程要求FreeRTOS提供真正不进入超时链表的无限阻塞语义，需要同时评审并启用 `INCLUDE_vTaskSuspend=1`。
+
+### 26.8 为什么“中断先发生”也不会丢通知
+
+存在这种合法时序：
+
+```text
+Task启动DMA
+    ↓
+DMA很快完成并进入ISR
+    ↓
+通知值从0增加到1
+    ↓
+Task才调用ulTaskNotifyTake()
+```
+
+这时 `ulTaskNotifyTake()`看到TCB中的通知值已经非0，会直接消费通知并返回，不进入Blocked状态。
+
+另一种时序是：
+
+```text
+Task进入ulTaskNotifyTake()
+    ↓
+内核在临界区中确认通知值仍为0，并标记正在等待
+    ↓
+Task进入Blocked
+    ↓
+ISR Give通知，将Task移回Ready
+```
+
+FreeRTOS在检查通知值、设置等待状态的关键位置使用临界区，避免ISR刚好夹在“检查为0”和“标记等待”之间造成丢事件。这比应用自己用一个未经保护的全局布尔变量可靠。
+
+### 26.9 当前Serial TX Task的完整状态时间线
+
+```text
+Running
+  │ 启动DMA1 Channel 4
+  │ 调用ulTaskNotifyTake()
+  ▼
+Blocked：等待DMA完成通知
+  │ DMA完成ISR执行Give
+  ▼
+Ready
+  │ 调度器选中该Task
+  ▼
+Running：ulTaskNotifyTake()返回并清零通知值
+  │ 调用vTaskDelay(1000 ms)
+  ▼
+Blocked：等待固定发送周期
+  │ Tick到期
+  ▼
+Ready → Running → 启动下一次DMA
+```
+
+如果DMA完成中断不发送通知，任务会一直停留在第一次等待DMA的Blocked阶段，后面的 `vTaskDelay()`不会执行，因此电脑端通常只能看到第一条消息。持续每秒输出说明通知等待和延时等待两个Blocked阶段都能正确结束。
+
+### 26.10 为什么当前使用Task Notification
+
+可选同步方式的区别是：
+
+| 机制 | 是否传递数据 | 是否需要独立内核对象 | 当前场景 |
+| --- | --- | --- | --- |
+| Queue | 是 | 是 | 后续传递具体日志消息 |
+| Binary Semaphore | 否 | 是 | 可用于一般ISR到Task事件同步 |
+| Task Notification | 可作计数、位或值使用 | 否，状态直接位于TCB | 最适合固定ISR通知固定Task |
+| Mutex | 否 | 是，带所有权 | 用于保护共享资源，不能由ISR释放 |
+
+当前DMA完成事件不需要携带字符串内容，也只有一个固定接收Task，所以Task Notification开销小、关系明确。后续日志系统仍需要Queue，因为多个Task要把不同文本或结构化消息交给Serial TX Task；Queue负责“传什么”，Notification负责“DMA什么时候完成”，两者职责不同。
+
+### 26.11 TX阶段验证结论与RX衔接
+
+当前已经通过构建、ELF符号检查和真实硬件现象确认：
+
+- USART1 TX使用DMA1 Channel 4普通模式工作。
+- 静态发送缓冲区生命周期满足DMA异步读取要求。
+- `DMA1_Channel4_IRQHandler`覆盖启动文件中的弱默认入口。
+- 逻辑优先级6的ISR能够合法调用 `vTaskNotifyGiveFromISR()`。
+- Serial TX Task能够在Notification到达前阻塞，收到通知后恢复，并通过 `vTaskDelay()`形成约1 s周期输出。
+- Serial TX Task已经改为阻塞等待私有有界TX Queue，不再依靠固定周期主动产生消息。
+- 两条启动消息能够按提交顺序完整输出，证明Queue FIFO、第一条DMA完成通知和第二条DMA启动形成连续闭环。
+- BSP只处理硬件，应用层拥有Task Handle与发送策略，没有提前引入Console、ADC、CAN或网络业务。
+
+有界TX Queue阶段已经完成。其他Task只提交待发送消息，Serial TX Task独占USART1 TX DMA；Queue负责“要发送什么”，Task Notification负责“本次DMA搬运何时结束”。
+
+随后完成的RX硬件通路为：
+
+```text
+USART1_RX → DMA1 Channel 5循环模式
+USART IDLE中断
+DMA写位置与软件读位置计算
+ISR通知Console RX Task处理新增字节
+```
+
+该RX硬件通路已经完成，具体原理和实机验收见第27章。下一阶段才继续加入行缓冲、回车换行、退格、`help`/`version`命令和运行统计输出。
+
+### 26.12 有界Serial TX Queue的所有权与FIFO验证
+
+当前Serial模块内部创建长度为4的私有Queue，每个元素保存一条最长128字节的消息及其实际长度。Queue对外只暴露 `AppSerial_Write()`，不把Queue Handle、USART寄存器或DMA通道暴露给生产者。
+
+```text
+main或其他Task
+    │ AppSerial_Write()复制消息
+    ▼
+私有有界TX Queue（FIFO）
+    │ xQueueReceive()取出一条完整副本
+    ▼
+Serial TX Task的局部工作消息
+    │ 启动DMA后阻塞等待Notification
+    ▼
+DMA1 Channel 4 → USART1_TX
+```
+
+这里有三个不同的内存所有权阶段：
+
+1. 调用 `AppSerial_Write()`之前，源缓冲区属于调用者。
+2. `xQueueSend()`成功返回后，消息内容已经被复制进Queue存储区；调用者可以立即修改或释放自己的源缓冲区。
+3. Serial TX Task通过 `xQueueReceive()`把一条消息复制到自己的局部工作消息中。DMA传输完成通知到来之前，该Task一直阻塞在当前函数栈帧中，局部工作消息仍然存在且不会被下一条消息覆盖。
+
+因此，DMA读取的不是生产者可能随时修改的缓冲区，而是Serial TX Task当前独占的消息副本。只有收到DMA完成通知后，Task才返回Queue顶部取下一条消息。
+
+Queue长度为4表示系统最多缓存4条尚未被消费者取走的消息，并不表示可以同时进行4次DMA传输。USART1 TX和DMA1 Channel 4在任一时刻仍只处理一条消息。Queue满时，当前非阻塞写接口立即报告失败，让上层明确选择丢弃、计数或稍后重试，避免低优先级日志无限消耗RAM或长期阻塞关键Task。
+
+Queue由FreeRTOS在运行时从现有 `ucHeap`中分配控制块和元素存储区。因此它会减少8 KiB FreeRTOS Heap的剩余空间，但Queue元素容量不会以同样大小直接增加ELF的 `bss`；`ucHeap`本身早已作为固定8 KiB数组计入 `bss`。
+
+本阶段向Queue连续提交两条启动消息，电脑端按相同顺序完整收到两条消息。该现象至少验证了：
+
+- 两次提交都成功复制进入Queue。
+- Queue按FIFO顺序交付消息。
+- 第一条发送完成后，DMA中断成功通知Serial TX Task。
+- Task在收到通知后才安全复用工作消息并启动第二条DMA。
+- Serial TX Task是唯一发送所有者，没有两个生产者直接争用DMA通道。
+
+这仍不是完整日志或Console系统。RX硬件通路已经在第27章完成；当前尚未加入消息级别、格式化、Console行协议、命令解析和运行统计，这些功能继续逐层添加。
+
+## 27. USART1 RX循环DMA、IDLE与Task Notification
+
+### 27.1 本阶段建立的最小闭环
+
+本阶段把USART1接收从“CPU逐字节查询”改为“DMA持续搬运、IDLE事件唤醒Task”：
+
+```text
+PA10 / USART1_RX
+    ↓ USART1_RX DMA请求
+DMA1 Channel 5循环模式
+    ↓
+256字节RX DMA缓冲区
+    │
+    ├─ CNDTR表示本轮尚未搬运的数据单元数
+    │
+USART检测到IDLE
+    ↓
+USART1_IRQHandler
+    ↓ vTaskNotifyGiveFromISR()
+Serial RX Task：Blocked → Ready → Running
+    ↓
+计算新增字节区间和回绕
+    ↓ AppSerial_Write()复制提交
+私有TX Queue → Serial TX Task → DMA1 Channel 4回显
+```
+
+DMA负责搬运，IDLE只负责产生“现在值得检查一次缓冲区”的事件，Task Notification只负责把该事件交给固定的Serial RX Task。通知值不是接收字节数，实际位置仍由CNDTR决定。
+
+### 27.2 Circular模式与CNDTR写位置
+
+RX使用Circular模式后，DMA从缓冲区位置0开始写入，写到最后一个字节后自动回到位置0。通道不需要在每次IDLE时停止、重装计数器或重新启动；这样才能避免接收空窗。
+
+当前Channel 5关键配置为：
+
+| 配置 | 当前选择 | 原因 |
+| --- | --- | --- |
+| 方向 | Peripheral → Memory | 数据从 `USART1->DR`进入RAM |
+| 外设地址递增 | 禁止 | 每个字节都从同一个DR读取 |
+| 内存地址递增 | 允许 | 依次写入RX缓冲区 |
+| 数据宽度 | Byte | USART当前按8位数据接收 |
+| 模式 | Circular | 写满后自动回到缓冲区头部 |
+| DMA优先级 | High | RX不能像TX一样等待软件稍后重试 |
+
+缓冲区长度为 `N` 时，DMA下一次写入位置为：
+
+```text
+writePosition = (N - CNDTR) % N
+```
+
+CNDTR表示本轮循环还剩多少个数据单元没有搬运，不是累计接收字节数。例如 `N=256`、`CNDTR=246`，说明本轮已经写入10字节，下一写位置为10。DMA完成一整圈时，CNDTR重新装载为256，因此写位置重新等价于0。
+
+### 27.3 软件读位置、回绕与发送分块
+
+Serial RX Task独占 `readPosition`，其含义是下一个尚未处理的字节位置。Task取得一次 `writePosition`快照后按以下规则处理：
+
+| 条件 | 新增数据区间 |
+| --- | --- |
+| `writePosition > readPosition` | `[readPosition, writePosition)` |
+| `writePosition < readPosition` | 先处理 `[readPosition, N)`，再处理 `[0, writePosition)` |
+| `writePosition == readPosition` | 在当前“不允许追满一圈”的前提下视为没有新增数据 |
+
+每次交给 `AppSerial_Write()`的长度还要受单条TX消息128字节上限约束。因此一个连续区间可能继续拆成多条Queue消息，但任一消息都不能跨越RX数组末尾。处理完一块后先推进 `readPosition`；到达 `N`时再归零，下一轮才从缓冲区头部继续。
+
+当前分块算法始终保持：
+
+```text
+0 <= readPosition < N
+0 < chunkLength <= N - readPosition
+```
+
+因此本次访问范围 `[readPosition, readPosition + chunkLength)`最多到达 `buffer[N - 1]`。发送后 `readPosition += chunkLength`可能刚好得到 `N`，但代码会在下一次获取数组地址之前把它归零，所以“发送后再判断回绕”不会造成数组越界。
+
+### 27.4 IDLE标志为什么必须读SR再读DR
+
+STM32F103清除USART IDLE标志要求固定硬件序列：
+
+```text
+读取USART_SR
+    ↓
+读取USART_DR
+```
+
+当前BSP先使用 `USART_GetITStatus()`检查IDLE，该函数会读取SR；确认事件有效后再调用并丢弃 `USART_ReceiveData()`的返回值，从而完成DR读取。`USART_ClearITPendingBit()`不适用于IDLE；`NVIC_ClearPendingIRQ()`也只能清NVIC挂起状态，不能代替外设的SR→DR清除序列。
+
+IDLE表示接收线路持续一个字符帧时间没有新数据。当前115200、8-N-1配置下，一个字符帧为10 bit，约86.8微秒。它适合表示一次输入暂停，但不是完整Console行或业务消息的天然边界。
+
+### 27.5 为什么RX中断在调度器启动后才激活
+
+`BspUsart1_Init()`在 `vTaskStartScheduler()`之前完成GPIO、波特率和基础外设配置，但RX DMA、IDLE中断源和USART1 NVIC只由Serial RX Task第一次运行时启动。
+
+这样可以保证：
+
+- Serial RX Task及其Handle已经创建。
+- FreeRTOS调度器和Cortex-M3端口已经完成启动。
+- USART1 ISR调用 `vTaskNotifyGiveFromISR()`时，中断优先级和调度上下文均有效。
+- 即使IDLE事件发生在Task调用 `ulTaskNotifyTake()`之前，通知值也会先保存在TCB中，不会丢失。
+
+当前USART1 ISR使用逻辑优先级6，位于项目允许调用FreeRTOS `FromISR` API的逻辑优先级5～15范围内。DMA1 Channel 5没有启用HT、TC或TE中断，因此不需要应用实现 `DMA1_Channel5_IRQHandler`。
+
+### 27.6 Serial RX Task的状态时间线
+
+```text
+Running：启动RX循环DMA和IDLE中断
+    ↓ ulTaskNotifyTake(pdTRUE, portMAX_DELAY)
+Blocked：等待IDLE通知，DMA仍持续接收
+    ↓ USART1 ISR执行Give
+Ready
+    ↓ 调度器选中
+Running：读取CNDTR、处理新增区间、提交回显
+    ↓ 再次等待
+Blocked
+```
+
+`pdTRUE`会在 `ulTaskNotifyTake()`成功返回时把累计通知值清零。即使多个IDLE事件合并，Task仍会读取当前写位置快照并处理尚未读取的数据；通知次数不用于计算字节数量。
+
+### 27.7 分层、缓冲区所有权与限制
+
+USART BSP拥有RX DMA静态缓冲区并负责DMA、CNDTR和IDLE硬件状态；应用Serial模块拥有RX Task Handle、软件读位置、FreeRTOS ISR桥接和回显策略。BSP不调用FreeRTOS，ISR不复制长数据或执行命令。
+
+`AppSerial_Write()`会把RX数据复制进私有TX Queue，所以函数返回后RX DMA可以继续覆盖循环缓冲区，而不会影响已经排队的回显消息。Queue满时接口立即失败，RX Task记录丢弃并继续推进读位置，避免串口回显反向无限阻塞接收任务。
+
+当前最小实现存在明确容量边界：仅凭 `readPosition`和 `writePosition`无法区分“缓冲区为空”和“DMA恰好追满一整圈”。因此一次连续无IDLE输入以及Task未及时处理的累计数据必须严格小于256字节。后续若要支持持续数据流，需要增加DMA半传输/传输完成事件或单调生产计数，而不是简单扩大数组后宣称问题消失。
+
+Serial RX Task当前分配192 words栈空间；该数值已支持本阶段实机闭环，但尚未通过Stack High Water Mark确定最终余量，因此不能仅凭“没有触发栈溢出Hook”就认定栈大小已经定稿。
+
+### 27.8 构建与真实硬件验收结论
+
+加入RX闭环后的Debug ELF静态尺寸为：
+
+```text
+text：10432 B
+data：8 B
+bss：11288 B
+Flash装载量：10440 B
+RAM静态占用：11296 B
+```
+
+ELF确认 `USART1_IRQHandler`为全局Text强符号，覆盖启动文件弱默认入口；`DMA1_Channel5_IRQHandler`继续保持弱默认符号，符合本阶段只使用USART IDLE事件的设计。
+
+真实硬件已经完成以下验收：
+
+- USART1 RX字节由DMA1 Channel 5写入256字节循环缓冲区。
+- IDLE ISR能够清除硬件状态并通过Task Notification唤醒Serial RX Task。
+- 原始字节能够经 `AppSerial_Write()`、TX Queue和DMA1 Channel 4完整回显。
+- 先输入200字节并完整回显，验证128+72字节的TX消息分块。
+- 随后输入100字节并完整回显，验证从位置200开始的尾部56字节加头部44字节回绕处理。
+
+这些结果共同证明RX循环DMA、CNDTR写位置、软件读位置、回绕、IDLE清除、ISR到Task同步和TX Queue复制已经形成最小闭环。
+
+### 27.9 下一边界：最小Console
+
+下一阶段不改变DMA、IDLE ISR或TX所有权，只在Serial RX Task取得字节后增加最小行协议：
+
+```text
+原始RX字节
+    ↓
+Console行缓冲
+    ↓ 处理CR/LF和退格
+完整命令行
+    ↓
+少量只读命令：help、version
+    ↓
+AppSerial_Write()输出响应
+```
+
+第一版Console只学习行缓冲、边界检查和命令分发，不提前加入ADC、CAN、W5500、MQTT、FTP或升级命令。

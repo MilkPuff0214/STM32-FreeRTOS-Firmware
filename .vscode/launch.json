@@ -1,0 +1,27 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "STM32F103 Debug",  //设置调试配置名称
+            "cwd": "${workspaceFolder}",    //设置工作目录为当前工作区
+            "executable": "${workspaceFolder}/build/firmware.elf",  //设置调试目标文件路径
+            "request": "launch",    //设置调试请求类型为启动
+            "type": "cortex-debug", //设置调试类型为Cortex-M系列
+            "servertype": "openocd",    //设置调试服务器类型为OpenOCD
+            "serverpath": "E:/toolkit/OpenOCD/bin/openocd.exe", //设置OpenOCD可执行文件路径
+            "configFiles": [    //设置OpenOCD配置文件路径
+                "interface/cmsis-dap.cfg",
+                "target/stm32f1x.cfg"
+            ],
+            "searchDir": [  //设置OpenOCD搜索目录
+                "E:\\toolkit\\OpenOCD\\openocd\\scripts"
+            ],
+            "openOCDLaunchCommands": [ //设置OpenOCD启动命令
+                "transport select swd",
+                "adapter speed 1000"
+            ],
+            "gdbPath": "arm-none-eabi-gdb", //设置GDB可执行文件路径
+            "runToEntryPoint": "main"   //设置调试程序运行到main函数入口点
+        },
+    ]
+}

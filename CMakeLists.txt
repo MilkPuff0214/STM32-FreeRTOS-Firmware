@@ -18,6 +18,8 @@ add_executable(firmware
     Libraries/CMSIS/system_stm32f10x.c
     Libraries/FWlib/src/stm32f10x_gpio.c
     Libraries/FWlib/src/stm32f10x_rcc.c
+    Libraries/FWlib/src/stm32f10x_usart.c
+    Libraries/FWlib/src/stm32f10x_dma.c
     
     # FreeRTOS Kernel V11.3.0 minimal sources.
     Libraries/FreeRTOS-Kernel/tasks.c
@@ -33,10 +35,12 @@ add_executable(firmware
     # Application tasks.
     User/app/led/app_led_task.c
     User/app/key/app_key_task.c
+    User/app/serial/app_serial_task.c
 
     # Board support package.
     User/bsp/led/bsp_led.c
     User/bsp/key/bsp_key.c
+    User/bsp/usart/bsp_usart.c
 
     User/main.c
 
@@ -59,6 +63,10 @@ target_include_directories(firmware PRIVATE
 
     User/bsp/key
     User/app/key
+
+    User/bsp/usart
+    User/app/serial
+
     User/app/event
 )
 

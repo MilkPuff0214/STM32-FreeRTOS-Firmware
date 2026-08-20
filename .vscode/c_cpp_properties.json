@@ -1,0 +1,11 @@
+{
+    "configurations": [     //开始定义一组 C/C++ IntelliSense 配置，configurations 是一个数组
+        {
+            "name": "STM32",
+            "compileCommands": [
+                "${workspaceFolder}/build/compile_commands.json"   //compileCommands = 告诉 VS Code C/C++ 扩展，“真实的编译参数数据库在哪里”。
+            ]
+        }
+    ],
+    "version": 4
+}

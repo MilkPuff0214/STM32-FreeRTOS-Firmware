@@ -73,7 +73,7 @@ LED Task的TCB和栈
 
 
 /* Optional kernel feature configuration. */
-#define configUSE_TASK_NOTIFICATIONS            0  /* 首版不用任务通知，暂不增加每个TCB的通知字段。 */
+#define configUSE_TASK_NOTIFICATIONS            1  /* 任务通知，增加每个TCB的通知字段。 */
 #define configUSE_MUTEXES                       0  /* 未加入queue.c，暂不编译互斥量和优先级继承支持。 */
 #define configUSE_RECURSIVE_MUTEXES             0  /* 未启用普通Mutex，递归Mutex也关闭。 */
 #define configUSE_COUNTING_SEMAPHORES            0  /* 未加入queue.c，暂不使用计数信号量。 */

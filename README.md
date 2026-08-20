@@ -1,10 +1,10 @@
 # STM32F103ZET6 固件工程
 
-本目录承载野火 STM32F103 霸道 V2 的固件代码。工程已经先用不依赖 FreeRTOS 的裸机 LED 冒烟测试验证 ARM GCC 工具链、CMake + GNU Make 构建流程、GCC 启动文件、链接脚本、系统时钟和 GPIO；当前正在由用户亲自完成 FreeRTOS Kernel V11.3.0 最小 LED Task 的移植与调试。
+本目录承载野火 STM32F103 霸道 V2 的固件代码。工程已经先用不依赖 FreeRTOS 的裸机 LED 冒烟测试验证 ARM GCC 工具链、CMake + GNU Make 构建流程、GCC 启动文件、链接脚本、系统时钟和 GPIO；随后由用户亲自完成 FreeRTOS Kernel V11.3.0 最小调度闭环、按键 Queue Demo、USART1 TX DMA + Task Notification，以及 USART1 RX循环DMA + IDLE回显闭环。
 
 FreeRTOS 的原理、术语、源码关系、自测题和逐步移植学习记录见 [FreeRTOS 学习与移植笔记](FreeRTOS学习.md)。本 README 继续作为固件工程状态、构建方法和验收结果的入口。
 
-裸机程序已经通过编译、链接和 ELF 静态检查，并已由用户在真实硬件上完成 CMSIS-DAP + OpenOCD 下载、PB5 红灯闪烁和 GDB 断点调试验证。FreeRTOS 最小 Demo 已完成源码接入、Task 创建、调度器启动路径构建和 ELF 静态检查；当前等待重新构建最新注释后进行 FreeRTOS Demo 的 OpenOCD 烧录与 GDB 动态验证。Codex 只提供讲解、只读检查并维护 Markdown，不直接修改固件代码。CAN、W5500、MQTT、FTP 和 Bootloader 尚未接入。
+裸机程序已经通过编译、链接和 ELF 静态检查，并已由用户在真实硬件上完成 CMSIS-DAP + OpenOCD 下载、PB5 红灯闪烁和 GDB 断点调试验证。FreeRTOS 调度器、Key Task → Queue → LED Task、USART1 TX DMA1 Channel 4、有界Serial TX Queue、USART1 RX DMA1 Channel 5循环接收、USART IDLE通知和原始字节回显均已完成构建与真实硬件验证。200字节加100字节的分批输入已经验证128字节发送分块和RX缓冲区回绕。下一步只加入最小Console行协议，不提前加入ADC、CAN、W5500、MQTT、FTP或Bootloader。Codex只提供讲解、只读检查并维护Markdown，不直接修改固件代码。
 
 ## 目录
 
@@ -28,7 +28,8 @@ FreeRTOS 的原理、术语、源码关系、自测题和逐步移植学习记�
 | 开发板 | 野火 STM32F103 霸道 V2 | 已确认 |
 | MCU | STM32F103ZET6，Cortex-M3 | 已确认 |
 | 板级库 | CMSIS + STM32F10x Standard Peripheral Library V3.5.0 | 已接入 |
-| RTOS | FreeRTOS Kernel V11.3.0 | 首个LED Task和调度器启动路径已构建并通过ELF静态检查；最新DWARF已同步，`main()`和`xTaskCreate()`已命中，六个Task创建实参与配置一致 |
+| RTOS | FreeRTOS Kernel V11.3.0 | 调度器、Queue、阻塞式任务等待和Direct-to-Task Notification已完成构建与实机验证 |
+| 串口基础 | USART1 PA9/PA10 + 板载CH340G；TX使用DMA1 Channel 4，RX使用DMA1 Channel 5 | TX普通DMA、RX循环DMA、IDLE通知、CNDTR位置计算、回绕和原始字节回显均已实机验证 |
 | 交叉编译器 | GNU Tools for STM32 14.3.1，`arm-none-eabi-gcc` | 已验证 |
 | 构建配置 | CMake 4.3.1 | 已验证 |
 | 构建执行 | GNU Make 4.4.1 | 已验证 |
@@ -83,14 +84,16 @@ firmware/
 │   ├── app/                           应用Task和业务编排，按功能域继续分子目录
 │   │   ├── event/                     Key Task与LED Task共享的按键事件契约
 │   │   ├── key/                       按键周期扫描、软件消抖和Queue生产者
-│   │   └── led/                       阻塞接收Queue事件并控制RGB LED
+│   │   ├── led/                       阻塞接收Queue事件并控制RGB LED
+│   │   └── serial/                    USART1 TX/RX Task、TX Queue、DMA与IDLE通知桥接
 │   └── bsp/                           板级支持层，按外设或器件继续分子目录
 │       ├── key/                       PA0、PC13按键非阻塞读取BSP
-│       └── led/                       霸道 V2 RGB LED BSP：bsp_led.c/.h
+│       ├── led/                       霸道 V2 RGB LED BSP：bsp_led.c/.h
+│       └── usart/                     USART1 GPIO、TX/RX DMA、CNDTR和硬件中断状态处理
 └── build/                             构建输出，不纳入 Git
 ```
 
-当前 CMake 目标已经编译 `tasks.c`、`list.c`、`queue.c`、GNU Cortex-M3 `port.c`、`heap_4.c` 和应用Hook。应用侧已形成 `Key Task → AppKeyEvent_t Queue → LED Task` 的最小生产者—消费者闭环：Key Task周期读取PA0/PC13并完成软件消抖，只发送稳定按下事件；LED Task阻塞等待Queue并根据KEY1/KEY2事件翻转绿灯或蓝灯。Timer、Event Group、Stream Buffer、外部中断、ADC和串口Console尚未加入构建。
+当前 CMake 目标已经编译 `tasks.c`、`list.c`、`queue.c`、GNU Cortex-M3 `port.c`、`heap_4.c`、应用Hook，以及 FWlib 的 USART和DMA驱动。应用侧已形成三个独立闭环：Key Task通过 `AppKeyEvent_t` Queue向LED Task传递稳定按下事件；Serial TX Task独占USART1发送通道，使用DMA1 Channel 4发送并等待完成通知；Serial RX Task等待USART IDLE通知，根据DMA1 Channel 5的CNDTR和软件读位置处理新增字节，再通过 `AppSerial_Write()`复制提交回显。`configUSE_TASK_NOTIFICATIONS`已启用。Timer、Event Group、Stream Buffer、Console、外部按键中断和ADC尚未加入构建。
 
 新增固件代码按职责落位，不能仅为省事堆在 `User/` 根目录：`Libraries/` 保存第三方内核和厂商库；`User/rtos/` 保存FreeRTOS应用侧Hook与适配；`User/app/<功能域>/` 保存Task入口和业务编排；`User/bsp/<外设或器件>/` 保存板级驱动。`main.c` 和全工程配置头可保留为根级入口，但不得逐步演变成业务实现集合。依赖方向应保持为：`main` 只调用必要的BSP初始化、应用模块注册和调度器启动，`app → bsp + FreeRTOS API`，`bsp → FWlib/CMSIS/硬件`；底层不得反向依赖应用层。
 
@@ -109,6 +112,8 @@ firmware/
 - 裸机基线程序每500 ms翻转一次红灯；首个FreeRTOS LED Task曾使用2000 ms阻塞延时完成调度验证。当前Queue Demo已改为事件驱动：KEY1稳定按下事件翻转绿灯，KEY2稳定按下事件翻转蓝灯，LED Task在无事件时阻塞等待Queue。
 - 上电测试前需要确认 RGB LED 供电跳帽 J73 已接通。
 - 调试下载使用 CMSIS-DAP，通过开发板 SWD 接口连接。
+- 板载CH340G连接USART1：PA9为TX，PA10为RX，当前串口参数为115200、8-N-1、无流控。
+- STM32F103固定DMA映射中，USART1_TX使用DMA1 Channel 4普通模式，USART1_RX使用DMA1 Channel 5循环模式。
 
 ## 构建环境检查
 
@@ -276,6 +281,58 @@ ucHeap
 
 向量表中的SVC、PendSV和SysTick入口分别指向FreeRTOS端口提供的 `SVC_Handler`、`PendSV_Handler`和 `SysTick_Handler`。向量表中函数地址最低位为1，表示Cortex-M Thumb状态，不是地址错误。构建和静态链接验收通过。当前 `app_led_task.c` 使用 `pdMS_TO_TICKS(2 * 1000)`，在1 kHz Tick下得到2000 Tick，即每2 s翻转一次LED。由于 `main.c` 后续增加的学习注释晚于当前ELF，虽然注释不改变机器指令，仍需在GDB验证前再构建一次，使DWARF源码行号与当前文件同步。
 
+### Queue与USART1 TX DMA闭环构建结果
+
+按键Queue Demo完成后，工程继续加入FWlib USART/DMA驱动、`User/bsp/usart/`、`User/app/serial/`和私有有界TX Queue。当前Debug ELF的静态尺寸为：
+
+```text
+text：9760 B
+data：8 B
+bss：11024 B
+Flash装载量：约9768 B / 512 KiB，约1.86%
+RAM静态占用：约11032 B / 64 KiB，约16.83%
+```
+
+ELF中已经保留以下关键符号：
+
+```text
+xQueueGenericCreate
+xQueueGenericSend
+xQueueReceive
+AppSerialTxTask_Create
+AppSerial_Write
+BspUsart1_TxDmaStart
+BspUsart1_TxDmaHandleInterrupt
+DMA1_Channel4_IRQHandler
+ulTaskGenericNotifyTake
+```
+
+`DMA1_Channel4_IRQHandler`为全局Text强符号，已覆盖启动文件中的同名弱默认处理函数。BSP只处理USART/DMA寄存器与中断标志，不调用FreeRTOS；应用Serial模块保存Task Handle，并在ISR桥接中使用 `vTaskNotifyGiveFromISR()`唤醒Serial TX Task。私有TX Queue在运行时从已有8 KiB FreeRTOS Heap分配，其他模块通过 `AppSerial_Write()`复制提交消息，不直接访问USART或DMA。该依赖方向保持为 `app → bsp + FreeRTOS API`。
+
+### USART1 RX循环DMA闭环构建结果
+
+加入DMA1 Channel 5循环接收、USART IDLE中断桥接和Serial RX Task后，当前Debug ELF的静态尺寸为：
+
+```text
+text：10432 B
+data：8 B
+bss：11288 B
+Flash装载量：约10440 B / 512 KiB，约1.99%
+RAM静态占用：约11296 B / 64 KiB，约17.24%
+```
+
+ELF中已经保留以下RX关键符号：
+
+```text
+AppSerialRxTask_Create
+BspUsart1_RxDmaStart
+BspUsart1_RxDmaGetWritePosition
+BspUsart1_RxIdleHandleInterrupt
+USART1_IRQHandler
+```
+
+`USART1_IRQHandler`为全局Text强符号，已覆盖启动文件中的弱默认入口。`DMA1_Channel5_IRQHandler`仍为弱默认符号，这是当前设计的预期结果：Channel 5只负责循环搬运，RX Task由USART IDLE事件唤醒，本阶段没有启用DMA半传输、传输完成或错误中断。
+
 ## 下载与实机验收
 
 裸机 LED 基线已经由用户在真实硬件上完成以下验收：
@@ -294,50 +351,52 @@ openocd -f interface/cmsis-dap.cfg -c "transport select swd" -f target/stm32f1x.
 
 以上结果说明启动文件、链接脚本、系统时钟、GPIO、构建、下载和基础调试链路已经形成最小闭环，可以把后续 FreeRTOS 问题与裸机板级问题分开定位。
 
-### FreeRTOS最小Demo的待执行验证
+### FreeRTOS与USART1 TX/RX DMA实机验收
 
-当前FreeRTOS Demo尚未记录真实硬件验收结果。由于 `main.c`最新注释晚于当前ELF，先执行一次增量构建，再启动OpenOCD服务器和GDB：
+用户已在真实硬件上完成以下稳定功能验收：
 
-```powershell
-cmake --build build -- -j8
-openocd -f interface/cmsis-dap.cfg -c "transport select swd" -f target/stm32f1x.cfg -c "adapter speed 1000"
-```
+- FreeRTOS调度器正常启动，应用Task与Idle Task能够运行，`vTaskDelay()`和阻塞式等待不会阻塞整个CPU。
+- Key Task周期扫描KEY1/KEY2并完成软件消抖，通过有界Queue发送事件；LED Task阻塞接收并分别翻转绿灯或蓝灯。
+- USART1使用PA9/PA10和板载CH340G，115200、8-N-1、无流控配置能够被电脑串口工具正确接收。
+- DMA1 Channel 4能够从静态发送缓冲区向USART1发送固定字符串。
+- DMA完成中断能够清除硬件状态，并通过Direct-to-Task Notification唤醒Serial TX Task。
+- Serial TX Task能够在 `ulTaskNotifyTake(pdTRUE, portMAX_DELAY)`返回后延时约1 s，再启动下一次发送；电脑端持续收到周期消息，证明DMA、ISR、Notification和任务状态转换闭环正常。
+- DMA1 Channel 5能够把USART1_RX字节持续写入256字节循环缓冲区；USART IDLE中断只清除硬件状态并通知Serial RX Task。
+- Serial RX Task能够根据CNDTR计算DMA下一写位置，维护软件读位置，并通过现有 `AppSerial_Write()`复制提交原始字节回显。
+- 两批之间等待IDLE并完成前一批回显：先输入200字节并完整回显，验证单条128字节上限下的128+72分块；再输入100字节并完整回显，验证从缓冲区位置200回绕后的尾部56字节加头部44字节处理。
+- USART1_RX循环DMA在IDLE处理期间保持运行；RX ISR和Task没有承担字符串解析、命令执行或长时间发送操作。
 
-另开一个PowerShell终端：
-
-```powershell
-arm-none-eabi-gdb build/firmware.elf
-```
-
-本轮要依次验证 `main`、`xTaskCreate`、`vTaskStartScheduler`、`SVC_Handler`、`vLedTask`、`vTaskDelay`、`PendSV_Handler`和一次 `SysTick_Handler`。Malloc Failed Hook与Stack Overflow Hook在正常路径中不应命中。当前延时参数应为2000 Tick，PB5红灯预期每2 s翻转一次、完整亮灭周期约4 s。逐次断点和临时工具输出不写入学习文档，README只保留验证目标，完成后再记录最终结论。
+有界Serial TX Queue已经通过两条启动消息的FIFO实机验证；RX循环DMA、IDLE通知、128字节发送分块和缓冲区回绕也已通过真实硬件验收。当前尚未完成的串口能力包括Console行缓冲、回车换行、退格、命令分发和运行统计输出。逐次断点、临时连接故障和工具输出不写入学习文档。
 
 ## 固件技术路线
 
 ```text
-P0  CMake + GNU Make + ARM GCC 裸机 LED 冒烟测试
+P0  CMake + GNU Make + ARM GCC裸机LED冒烟测试（已完成）
  ↓
-P1  FreeRTOS V11.3.0 + LED 任务 + vTaskDelay
+P0  FreeRTOS V11.3.0最小调度闭环（已完成）
  ↓
-P1  bxCAN + Windows CAN 分析仪最小双向闭环
+P0  Key Task → Queue → LED Task（已完成并形成Git基线）
+ ↓
+P0  USART1 TX DMA → ISR → Task Notification（已完成实机验证）
+ ↓
+P0  有界Serial TX Queue与单一发送所有者（已完成实机验证）
+ ↓
+P0  USART1 RX循环DMA + IDLE回显（已完成实机验证）
+ ↓
+P0  最小Console行协议与命令分发（下一步）
+ ↓
+P0  双路ADC Queue、Binary Semaphore和真实共享资源同步实验
+ ↓
+P1  bxCAN + Windows CAN分析仪最小双向闭环
  ↓
 P2  W5500 + TCP Socket + MQTT 3.1.1 + 业务心跳
  ↓
-P3  FTP 流式下载 + W25Q64 暂存 + MD5 校验
+P3  FTP流式下载 + W25Q64暂存 + MD5校验
  ↓
-P4  Bootloader + 内部 Flash 更新 + 断电恢复
+P4  Bootloader + 内部Flash更新 + 断电恢复
 ```
 
-进入下一步 FreeRTOS LED Demo 时计划采用：
-
-```text
-FreeRTOS Kernel V11.3.0
-portable/GCC/ARM_CM3
-heap_4.c
-FreeRTOSConfig.h
-LED Task + vTaskDelay()
-```
-
-只有裸机点灯完成实机验证后，才加入 FreeRTOS。这样可以把启动文件、链接脚本、时钟和 GPIO 问题与调度器、SysTick、任务栈问题分开定位。
+串口TX与RX硬件通路已经分别完成验证。下一阶段只在Serial RX Task之后增加最小Console行缓冲、回车换行、退格和少量只读命令；DMA、IDLE ISR和TX所有权保持不变。这样继续把字节接收、行协议和命令分发分别定位，不把ADC、EXTI或网络功能提前混入。
 
 ## FreeRTOS V11.3.0 学习型移植记录
 
@@ -372,28 +431,36 @@ PB5 红灯约每 2000 ms 翻转一次
 | 0. 固化裸机基线 | 排除工具链、启动、链接、时钟、GPIO、下载器和 GDB 问题 | 已完成实机验证 |
 | 1. 下载内核 | 从官方仓库取得并核验 FreeRTOS Kernel V11.3.0 | 已下载到 `resources/` 并完成版本核验 |
 | 2. 认识内核组成 | 理解通用内核、处理器端口、内存管理器和应用配置的边界 | 已完成第一轮目录学习 |
-| 3. 选择 Cortex-M3 端口 | 从完整上游快照中选择 `portable/GCC/ARM_CM3`，理解 SysTick、PendSV 和 SVC | 端口已接入构建，三个异常入口的ELF强符号已确认；实机异常路径待验证 |
-| 4. 选择堆实现 | 选择 `heap_4.c`，理解任务创建所需的动态内存 | 已接入构建；创建Task后8 KiB `ucHeap`已进入ELF，运行时分配仍待GDB验证 |
+| 3. 选择 Cortex-M3 端口 | 从完整上游快照中选择 `portable/GCC/ARM_CM3`，理解 SysTick、PendSV 和 SVC | 端口已接入构建，三个异常入口的ELF强符号和调度器实机运行均已确认 |
+| 4. 选择堆实现 | 选择 `heap_4.c`，理解任务创建所需的动态内存 | 已接入构建；动态创建多个Task和Queue成功，8 KiB `ucHeap`已进入ELF |
 | 5. 创建应用配置 | 编写工程自己的 `FreeRTOSConfig.h` | 已由用户创建；最小内核与应用Hook的只读语法检查通过 |
 | 6. 接入 CMake | 只把最小 Demo 所需源文件和包含路径加入目标 | 已由用户完成并首次链接成功；`noexecstack`已验证生效，正式ELF的`GNU_STACK`为`RW` |
-| 6A. 规范目录分层 | 把板级驱动统一放到 `User/bsp/<模块>/`，应用Task放到 `User/app/<功能域>/` | 规则已写入根目录`AGENTS.md`；LED BSP迁移和回归构建已完成，迁移后实机闪烁待复验 |
+| 6A. 规范目录分层 | 把板级驱动统一放到 `User/bsp/<模块>/`，应用Task放到 `User/app/<功能域>/` | LED、Key、USART BSP和LED、Key、Serial应用模块均已按规则落位并完成构建/实机回归 |
 | 7. 改造入口程序 | 删除裸机 SysTick 忙等，创建 LED Task 并启动调度器 | 已由用户完成并成功生成ELF |
-| 8. 构建和静态检查 | 检查异常符号、内存占用、映射文件和编译警告 | 符号、Heap、向量表、内存和GNU_STACK已复核；`main.c`最新注释晚于ELF，GDB前需再构建同步行号 |
-| 9. 烧录和 GDB 验证 | 验证调度器、Tick、上下文切换、任务阻塞和错误 Hook | 已命中`main()`和`xTaskCreate()`；六个Task创建实参与配置一致，继续验证动态创建和调度路径 |
-| 10. 最小 Demo 验收 | 连续运行并记录结果，形成可回退的 Git 基线 | 按键BSP、软件消抖、Queue生产者和LED消费者已完成构建；提交前由用户确认最终实机行为并形成Git基线 |
+| 8. 构建和静态检查 | 检查异常符号、内存占用、映射文件和编译警告 | 符号、Heap、向量表、内存、GNU_STACK、Queue和DMA1 Channel 4中断强符号均已复核 |
+| 9. 烧录和 GDB 验证 | 验证调度器、Tick、上下文切换、任务阻塞和错误 Hook | 调度器、Task运行、Queue阻塞/唤醒和基础GDB调试已完成实机验证 |
+| 10. 最小 Demo 验收 | 连续运行并记录结果，形成可回退的 Git 基线 | Key Task → Queue → LED Task已完成实机验证、提交、推送并建立`freertos-queue-demo-v0.1`标签 |
+| 11. USART1 TX DMA同步 | 学习DMA缓冲区生命周期、完成中断和Task Notification | 固定字符串、DMA完成通知和有界TX Queue均已实机验证 |
+| 12. USART1 RX循环DMA同步 | 学习CNDTR、软件读位置、回绕、IDLE清除和ISR到Task通知 | 原始字节回显、128字节分块及200+100字节回绕均已实机验证 |
 
 每完成一步，都应把实际命令、结果、遇到的问题和验证结论补充到本节，不能提前把计划写成已完成结果。
 
 ### 下一阶段FreeRTOS学习路线
 
-首个LED Task已经扩展为按键Queue Demo。后续继续按单一机制逐步验收，不在一次变更中同时启用全部外设和同步机制：
+首个LED Task已经扩展为按键Queue Demo，USART1 TX/RX DMA与Task Notification也已分别形成闭环。后续继续按单一机制逐步验收，不在一次变更中同时启用全部外设和同步机制：
 
 ```text
 非阻塞按键BSP和轮询Task（已完成构建）
     ↓
 Queue传递按键事件（已完成构建）
     ↓
-USART1 TX/RX DMA与最小Console
+USART1 TX DMA与Task Notification（已完成实机验证）
+    ↓
+有界Serial TX Queue与单一发送所有者（已完成实机验证）
+    ↓
+USART1 RX循环DMA与IDLE中断（已完成实机验证）
+    ↓
+最小Console行协议和命令分发（下一步）
     ↓
 双路ADC数据通过Queue发送到Serial TX Task
     ↓
@@ -402,7 +469,7 @@ Binary Semaphore完成EXTI到Task同步
 Mutex保护真实共享资源
 ```
 
-历史 `User/Key/`阻塞扫描示例已由分层后的 `User/bsp/key/`和 `User/app/key/`替代，历史EXTI与串口示例不直接加入当前CMake。下一阶段将重新建立 `User/bsp/usart/`和应用Console，使用USART1 TX/RX DMA、单一串口发送所有者和有界消息Queue；EXTI后续仍需使用统一NVIC分组，并满足FreeRTOS `FromISR`优先级边界。具体原理和阶段验收见 [FreeRTOS学习.md](FreeRTOS学习.md#25-第二阶段按键queuesemaphore-与-mutex)。
+历史 `User/Key/`阻塞扫描示例已由分层后的 `User/bsp/key/`和 `User/app/key/`替代，历史EXTI与串口示例不直接加入当前CMake。`User/bsp/usart/`和 `User/app/serial/`已经建立；TX方向保持Serial TX Task为唯一所有者，RX方向由循环DMA、USART IDLE通知和Serial RX Task协作，回显数据通过私有有界TX Queue复制提交。下一阶段在现有RX Task之后增加Console行协议，不改变BSP与ISR职责。EXTI后续仍需使用统一NVIC分组，并满足FreeRTOS `FromISR`优先级边界。具体原理和阶段验收见 [FreeRTOS学习.md](FreeRTOS学习.md#25-第二阶段按键queuesemaphore-与-mutex)、[USART1 TX DMA 与 Task Notification](FreeRTOS学习.md#26-usart1-tx-dma-与-task-notification)和 [USART1 RX循环DMA、IDLE与Task Notification](FreeRTOS学习.md#27-usart1-rx循环dmaidle与task-notification)。
 
 ### 3. 官方源码下载和版本核验
 
@@ -727,7 +794,10 @@ FreeRTOS 提供多种动态内存实现，应用一次只能选择一种：
 ## 当前范围与限制
 
 - 当前代码用于FreeRTOS最小调度闭环和板级运行环境验证，不代表后续业务架构已经实现。
-- FreeRTOS V11.3.0最小内核已经接入；`SysTick`已由ARM_CM3端口用于RTOS Tick，动态运行结果仍待用户在硬件上验证。
+- FreeRTOS V11.3.0最小内核已经接入；调度器、Queue和Task Notification已完成真实硬件验证。
+- USART1 TX普通DMA、RX循环DMA、IDLE事件、CNDTR位置计算和原始字节回显已经完成；Console行协议、命令分发和运行统计命令尚未实现。
+- 当前RX只依赖IDLE和CNDTR，未启用DMA1 Channel 5半传输/传输完成中断；不宣称支持无IDLE的持续数据流或单次连续满256字节，DMA追满一圈可能覆盖未处理数据并造成读写位置相等。
+- Serial RX Task当前分配192 words栈空间，尚未通过Stack High Water Mark完成最终余量测量。
 - 尚未实现 CAN、W5500、TCP、MQTT、FTP、W25Q64 和 Bootloader。
 - 不在固件源码或 README 中保存真实 MQTT/FTP 用户名、密码、证书私钥或设备唯一凭据。
 - `build/` 中的 ELF、HEX、BIN、MAP 和中间文件不提交 Git。

@@ -6,6 +6,8 @@
 #include "bsp_key.h"
 #include "app_key_task.h"
 #include "app_key_event.h"
+#include "bsp_usart.h"
+#include "app_serial_task.h"
 
 #include "queue.h"
 /*
@@ -14,6 +16,15 @@
  */
 #define APP_KEY_EVENT_QUEUE_LENGTH 4U
 
+/*
+ * 当前使用两条启动消息验证Queue的FIFO顺序。
+ * AppSerial_Write()会复制数据，所以原缓冲区不直接交给DMA。
+ */
+static const uint8_t s_ucSerialMessage1[] =
+    "\r\nSerial TX Queue message 1.\r\n";
+
+static const uint8_t s_ucSerialMessage2[] =
+    "Serial TX Queue message 2.\r\n";
 int main(void)
 {
     BaseType_t xTaskCreateResult;
@@ -21,6 +32,7 @@ int main(void)
     /* 调度器启动前完成所有基础硬件初始化。 */
     LED_GPIO_Config();
     BspKey_Init();
+    BspUsart1_Init();
 
     /*
     * Queue中的每一个项目都是一个AppKeyEvent_t。
@@ -78,6 +90,47 @@ uxItemSize
         * 调度器尚未启动，任务创建失败后停在这里，
         * 便于通过GDB检查FreeRTOS Heap。
         */
+        for (;;)
+        {
+        }
+    }
+    if (AppSerialTxTask_Create() == false)
+    {
+        /*
+        * 调度器启动前创建失败，通常表示FreeRTOS Heap不足。
+        */
+        for (;;)
+        {
+        }
+    }
+
+    if (AppSerialRxTask_Create() == false)
+    {
+        /*
+        * RX Task创建失败时保留现场，方便检查FreeRTOS Heap。
+        */
+        for (;;)
+        {
+        }
+    }
+    /*
+    * Queue已经创建，但调度器尚未启动。
+    * 使用非阻塞发送可以先把启动消息放入Queue，
+    * 调度器启动后Serial TX Task会按FIFO顺序取出。
+    */
+    if (AppSerial_Write(
+            s_ucSerialMessage1,
+            (uint16_t)(sizeof(s_ucSerialMessage1) - 1U)) == false)
+    {
+        for (;;)
+        {
+        }
+    }
+
+    if (AppSerial_Write(
+            s_ucSerialMessage2,
+            (uint16_t)(sizeof(s_ucSerialMessage2) - 1U)) == false)
+    {
         for (;;)
         {
         }
