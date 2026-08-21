@@ -33,6 +33,7 @@
 - [25. 第二阶段：按键、Queue、Semaphore 与 Mutex](#25-第二阶段按键queuesemaphore-与-mutex)
 - [26. USART1 TX DMA 与 Task Notification](#26-usart1-tx-dma-与-task-notification)
 - [27. USART1 RX循环DMA、IDLE与Task Notification](#27-usart1-rx循环dmaidle与task-notification)
+- [28. 最小Console行协议与Serial RX Task接入](#28-最小console行协议与serial-rx-task接入)
 
 ## 1. 学习目标与边界
 
@@ -1485,6 +1486,7 @@ STM32F103ZET6 的 64 KiB SRAM 还需要容纳：
 | 9 | 烧录、GDB 和连续运行验收 | 调度器、Queue Demo及USART1 TX/RX DMA → ISR → Task Notification闭环已完成真实硬件验证 |
 | 10 | 建立有界Serial TX Queue | 私有Queue、消息复制、FIFO发送和单一TX所有权已完成构建与真实硬件验证 |
 | 11 | 建立USART1 RX循环DMA闭环 | Channel 5循环接收、IDLE通知、CNDTR位置计算、原始字节回显和缓冲区回绕已完成构建与真实硬件验证 |
+| 12 | 建立最小Console行协议 | 有界行缓冲、CR/LF/CRLF、退格、超长整行丢弃、只读命令分发和边界恢复已完成构建与真实硬件验证 |
 
 ## 16. 当前应掌握的核心结论
 
@@ -8103,10 +8105,10 @@ Ready → Running → 启动下一次DMA
 USART1_RX → DMA1 Channel 5循环模式
 USART IDLE中断
 DMA写位置与软件读位置计算
-ISR通知Console RX Task处理新增字节
+ISR通知Serial RX Task处理新增字节
 ```
 
-该RX硬件通路已经完成，具体原理和实机验收见第27章。下一阶段才继续加入行缓冲、回车换行、退格、`help`/`version`命令和运行统计输出。
+该RX硬件通路已经完成，具体原理和实机验收见第27章；随后加入的行缓冲、回车换行、退格和 `help`/`version`命令见第28章。运行统计仍是后续独立步骤。
 
 ### 26.12 有界Serial TX Queue的所有权与FIFO验证
 
@@ -8145,7 +8147,7 @@ Queue由FreeRTOS在运行时从现有 `ucHeap`中分配控制块和元素存储�
 - Task在收到通知后才安全复用工作消息并启动第二条DMA。
 - Serial TX Task是唯一发送所有者，没有两个生产者直接争用DMA通道。
 
-这仍不是完整日志或Console系统。RX硬件通路已经在第27章完成；当前尚未加入消息级别、格式化、Console行协议、命令解析和运行统计，这些功能继续逐层添加。
+TX Queue本身不是日志或Console系统。RX硬件通路在第27章完成，最小Console行协议在第28章接入；消息级别、格式化和运行统计仍需继续逐层添加。
 
 ## 27. USART1 RX循环DMA、IDLE与Task Notification
 
@@ -8174,6 +8176,8 @@ Serial RX Task：Blocked → Ready → Running
 ```
 
 DMA负责搬运，IDLE只负责产生“现在值得检查一次缓冲区”的事件，Task Notification只负责把该事件交给固定的Serial RX Task。通知值不是接收字节数，实际位置仍由CNDTR决定。
+
+本章记录的是接入Console之前用于隔离验证RX硬件通路的原始字节回显基线。第28章复用同一DMA缓冲区、IDLE通知和软件读位置算法，只把“原样回显”替换为“逐字节交给Console状态机”。
 
 ### 27.2 Circular模式与CNDTR写位置
 
@@ -8208,7 +8212,7 @@ Serial RX Task独占 `readPosition`，其含义是下一个尚未处理的字节
 | `writePosition < readPosition` | 先处理 `[readPosition, N)`，再处理 `[0, writePosition)` |
 | `writePosition == readPosition` | 在当前“不允许追满一圈”的前提下视为没有新增数据 |
 
-每次交给 `AppSerial_Write()`的长度还要受单条TX消息128字节上限约束。因此一个连续区间可能继续拆成多条Queue消息，但任一消息都不能跨越RX数组末尾。处理完一块后先推进 `readPosition`；到达 `N`时再归零，下一轮才从缓冲区头部继续。
+在第27章的原始回显实现中，每次交给 `AppSerial_Write()`的长度还要受单条TX消息128字节上限约束。因此一个连续区间可能继续拆成多条Queue消息，但任一消息都不能跨越RX数组末尾。第28章改为逐字节交给Console后不再按128字节拆分原始输入，但“连续块不能跨越数组末尾”以及读位置推进、回绕规则保持不变。
 
 当前分块算法始终保持：
 
@@ -8255,7 +8259,7 @@ Blocked：等待IDLE通知，DMA仍持续接收
     ↓ USART1 ISR执行Give
 Ready
     ↓ 调度器选中
-Running：读取CNDTR、处理新增区间、提交回显
+Running：读取CNDTR并处理新增区间（第27章提交回显，第28章逐字节解析Console）
     ↓ 再次等待
 Blocked
 ```
@@ -8264,9 +8268,9 @@ Blocked
 
 ### 27.7 分层、缓冲区所有权与限制
 
-USART BSP拥有RX DMA静态缓冲区并负责DMA、CNDTR和IDLE硬件状态；应用Serial模块拥有RX Task Handle、软件读位置、FreeRTOS ISR桥接和回显策略。BSP不调用FreeRTOS，ISR不复制长数据或执行命令。
+USART BSP拥有RX DMA静态缓冲区并负责DMA、CNDTR和IDLE硬件状态；应用Serial模块拥有RX Task Handle、软件读位置和FreeRTOS ISR桥接。BSP不调用FreeRTOS，ISR不复制长数据或执行命令。
 
-`AppSerial_Write()`会把RX数据复制进私有TX Queue，所以函数返回后RX DMA可以继续覆盖循环缓冲区，而不会影响已经排队的回显消息。Queue满时接口立即失败，RX Task记录丢弃并继续推进读位置，避免串口回显反向无限阻塞接收任务。
+在原始回显基线中，`AppSerial_Write()`把RX数据复制进私有TX Queue，所以函数返回后RX DMA可以继续覆盖循环缓冲区，而不会影响已经排队的消息。接入Console后，RX原始数据不再整块回显；只有Console形成完整响应时才调用同一复制接口。Queue满时接口仍立即失败，RX Task记录丢弃并继续推进读位置，避免串口输出反向无限阻塞接收任务。
 
 当前最小实现存在明确容量边界：仅凭 `readPosition`和 `writePosition`无法区分“缓冲区为空”和“DMA恰好追满一整圈”。因此一次连续无IDLE输入以及Task未及时处理的累计数据必须严格小于256字节。后续若要支持持续数据流，需要增加DMA半传输/传输完成事件或单调生产计数，而不是简单扩大数组后宣称问题消失。
 
@@ -8296,9 +8300,9 @@ ELF确认 `USART1_IRQHandler`为全局Text强符号，覆盖启动文件弱默�
 
 这些结果共同证明RX循环DMA、CNDTR写位置、软件读位置、回绕、IDLE清除、ISR到Task同步和TX Queue复制已经形成最小闭环。
 
-### 27.9 下一边界：最小Console
+### 27.9 与最小Console的衔接
 
-下一阶段不改变DMA、IDLE ISR或TX所有权，只在Serial RX Task取得字节后增加最小行协议：
+后续接入最小Console时没有改变DMA、IDLE ISR或TX所有权，只在Serial RX Task取得字节后增加行协议：
 
 ```text
 原始RX字节
@@ -8312,4 +8316,119 @@ Console行缓冲
 AppSerial_Write()输出响应
 ```
 
-第一版Console只学习行缓冲、边界检查和命令分发，不提前加入ADC、CAN、W5500、MQTT、FTP或升级命令。
+第一版Console只学习行缓冲、边界检查和命令分发，没有提前加入ADC、CAN、W5500、MQTT、FTP或升级命令。实现原理和验收结论见第28章。
+
+## 28. 最小Console行协议与Serial RX Task接入
+
+### 28.1 模块边界与数据流
+
+最小Console复用第27章已经验证的RX硬件通路，没有新增Console Task、Queue或中断：
+
+```text
+USART1_RX → DMA1 Channel 5循环缓冲区
+    ↓ USART IDLE
+USART1_IRQHandler：只清状态并通知
+    ↓
+Serial RX Task：计算CNDTR写位置、软件读位置和连续数据块
+    ↓ 逐字节调用AppConsole_ProcessByte()
+纯C Console状态机
+    ↓ 完整命令产生静态响应视图
+AppSerial_Write()复制响应
+    ↓
+私有TX Queue → Serial TX Task → DMA1 Channel 4
+```
+
+`User/app/console/`只负责有界行缓冲和命令分发，不包含FreeRTOS、BSP或Serial模块头文件，也不读取USART寄存器。它通过 `AppConsoleOutput_t`返回响应地址和长度，由Serial RX Task决定如何发送，因此不会形成Console反向驱动USART或DMA的依赖。
+
+### 28.2 IDLE事件不等于命令行结束
+
+USART IDLE只表示线路在一个字符帧时间内没有新数据。人工输入时，每两个按键之间都可能产生IDLE，所以一条 `help`命令可能经历多次以下状态转换：
+
+```text
+Serial RX Task：Blocked
+    ↓ IDLE ISR发送Notification
+Ready → Running：取出一个或若干新字节，更新Console状态
+    ↓ 再次调用ulTaskNotifyTake()
+Blocked
+```
+
+只有接收到CR（`0x0D`）、LF（`0x0A`）或CRLF组合时，Console才认为一行结束。命令行状态保存在Console模块的静态变量中，因此能够跨多次IDLE通知继续累计；Notification次数仍不表示命令长度。
+
+### 28.3 有界行状态机
+
+Console使用64字节静态数组，其中最多保存63个可打印字符，最后一个字节始终留给C字符串结束符 `\0`。核心状态为：
+
+| 状态 | 含义 |
+| --- | --- |
+| 当前行长度 | 已经保存的有效字符数，范围为0～63 |
+| 超长丢弃标志 | 当前行是否已经超过容量，需要丢弃到行结束 |
+| 前一字节是CR | 用于把CRLF识别为一次行结束，而不是两次命令 |
+
+`AppConsole_Init()`在Serial RX Task启动RX DMA前调用一次，重置上述状态。`AppConsole_ProcessByte()`每次只消费一个字节：普通可打印ASCII进入行缓冲，退格修改当前长度，CR或LF触发行完成处理，其他控制字符忽略。`prvCompleteLine()`只在行结束时补上 `\0`并执行精确命令匹配。
+
+始终保持以下边界：
+
+```text
+0 <= lineLength <= 63
+lineBuffer[lineLength] == '\0'
+```
+
+因此写入普通字符、退格后重新放置结束符，以及行结束时调用 `strcmp()`都不会访问数组之外。
+
+### 28.4 CR/LF、退格与超长恢复
+
+单独CR和单独LF都可以完成一行。收到CR后，Console先执行当前命令并记录“前一字节是CR”；如果下一字节恰好是LF，就只清除该记录而不再次执行，从而保证CRLF只产生一次响应。
+
+Backspace（`0x08`）和Delete（`0x7F`）在内部都按删除一个字符处理，但只有当前长度大于0时才递减，避免无符号长度从0下溢。当前固件不逐字回显输入，终端上的输入显示和光标擦除效果取决于串口工具的本地回显设置；这不影响STM32内部行缓冲内容。
+
+当63个有效字符已经占满缓冲区后，第64个可打印字符不会写入数组，而是使整行进入丢弃状态。此后包括退格在内的非行结束字节全部忽略，直到CR或LF到达，再返回一次 `ERROR: line too long`并重置状态。整行作废而不是执行被截断的前63字符，可以避免未来把长输入的有效前缀误当作控制命令。
+
+### 28.5 响应所有权与背压
+
+Console响应是模块内部的 `static const`数组。`AppConsole_ProcessByte()`返回 `true`时，输出对象只提供只读地址和长度；Serial RX Task立即调用 `AppSerial_Write()`，把响应复制进现有私有TX Queue。因此Console随后重置命令行状态，不会影响已经排队的响应，DMA也不会直接读取Console的可变行缓冲区。
+
+`AppSerial_Write()`仍使用0 Tick非阻塞提交。TX Queue满时，Serial RX Task累计Console响应丢弃次数并继续推进DMA软件读位置，不在接收路径中等待串口发送完成。这样优先保护RX循环缓冲区不被未处理数据追上，但也意味着当前长度为4的TX Queue不承诺吸收无限数量的同批命令响应。
+
+### 28.6 当前命令和明确限制
+
+第一版只实现：
+
+| 输入 | 行结束后的行为 |
+| --- | --- |
+| `help` | 返回当前命令列表 |
+| `version` | 返回Console版本 |
+| 空行 | 不响应 |
+| 其他非空行 | 返回 `ERROR: unknown command` |
+| 超长行 | 返回 `ERROR: line too long`，然后恢复接收下一行 |
+
+命令按小写字符串精确比较，不裁剪前后空格，不做大小写归一。当前也没有参数解析、动态命令注册、命令历史、方向键编辑、设备端逐字符回显或运行统计命令。所有固定响应都小于 `AppSerial_Write()`的128字节单条消息上限。
+
+### 28.7 构建与真实硬件验收结论
+
+Console进入运行路径后的Debug ELF静态尺寸为：
+
+```text
+text：11056 B
+data：8 B
+bss：11352 B
+Flash装载量：11064 B，约占512 KiB的2.11%
+RAM静态占用：11360 B，约占64 KiB的17.33%
+```
+
+ELF中 `AppConsole_Init()`、`AppConsole_ProcessByte()`、`AppSerialRxTask_Create()`、`USART1_IRQHandler`和 `DMA1_Channel4_IRQHandler`均已进入有效代码路径。`DMA1_Channel5_IRQHandler`继续保持弱默认符号，符合RX循环DMA不启用Channel 5中断的设计。
+
+真实硬件已经完成以下功能与边界验收：
+
+- `help`和 `version`返回预期固定响应，未知命令返回错误，空行不响应。
+- 手动输入能够跨多次IDLE通知累计为一条完整命令。
+- 单独CR、单独LF和CRLF均可结束命令，CRLF只执行一次。
+- 退格能够修改当前行，空行退格不会造成长度下溢。
+- 同一批数据中的 `help\r\nversion\r\n`按顺序各响应一次。
+- 63个可打印字符作为合法长度进入未知命令分支；第64个字符触发一次超长错误。
+- 超长行结束后，下一条 `help`能够正常执行，证明丢弃状态已经恢复。
+
+这些结果证明DMA/IDLE事件边界、Console行边界和TX响应边界已经被分开：IDLE负责唤醒，CR/LF负责完成命令，TX Queue负责复制和排队响应。
+
+### 28.8 下一边界
+
+最小Console闭环完成后，运行统计、RX Task栈高水位和更复杂的命令参数仍是独立功能，不能仅凭当前命令测试推断已经完成。Serial RX Task继续使用192 words栈空间，最终余量仍需通过Stack High Water Mark实测。固化本阶段Git基线后，再按工程路线进入双路ADC Queue、Binary Semaphore和真实共享资源同步实验；本章不提前引入CAN、W5500、MQTT、FTP或OTA。

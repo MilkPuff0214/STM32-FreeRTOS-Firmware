@@ -32,7 +32,7 @@ bool AppSerial_Write(const uint8_t *pData, uint16_t length);
  * 创建Serial RX Task。
  *
  * 必须先成功调用AppSerialTxTask_Create()，
- * 保证RX回显时TX Queue已经存在。
+ * 保证Console响应提交时TX Queue已经存在。
  */
 bool AppSerialRxTask_Create(void);
 

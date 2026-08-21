@@ -36,6 +36,7 @@ add_executable(firmware
     User/app/led/app_led_task.c
     User/app/key/app_key_task.c
     User/app/serial/app_serial_task.c
+    User/app/console/app_console.c
 
     # Board support package.
     User/bsp/led/bsp_led.c
@@ -67,6 +68,7 @@ target_include_directories(firmware PRIVATE
     User/bsp/usart
     User/app/serial
 
+    User/app/console
     User/app/event
 )
 

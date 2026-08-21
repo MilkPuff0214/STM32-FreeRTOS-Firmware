@@ -9,6 +9,7 @@
 #include "task.h"
 
 #include "bsp_usart.h"
+#include "app_console.h"
 
 /* 最多缓存4条尚未发送的串口消息。 */
 #define APP_SERIAL_TX_QUEUE_LENGTH    4U
@@ -47,16 +48,15 @@ static volatile uint32_t s_ulTxDmaStartFailureCount = 0U;
 static TaskHandle_t s_xSerialRxTaskHandle = NULL;  //接收任务的任务句柄
 
 /*
- * TX Queue满时，当前回显测试选择丢弃对应数据并累计次数。
- * 以后可通过诊断命令读取这个计数。
+ * TX Queue满时不阻塞RX Task，丢弃当前Console响应并累计次数。
+ * 后续可以通过诊断命令读取该计数。
  */
-static volatile uint32_t s_ulRxEchoDropCount = 0U;
+static volatile uint32_t s_ulConsoleResponseDropCount = 0U;
 
 
 static void prvSerialTxTask(void *pvParameters)
 {
     AppSerialTxMessage_t xMessage;
-
     (void)pvParameters;
 
     for (;;)
@@ -188,9 +188,11 @@ void DMA1_Channel4_IRQHandler(void)
 
 static void prvSerialRxTask(void *pvParameters)
 {
-    const uint8_t *pucRxBuffer;
-    uint16_t usReadPosition;
-    uint16_t usWritePosition;
+    const uint8_t *pucRxBuffer; //指向USART1 RX DMA循环缓冲区的起始地址
+    AppConsoleOutput_t xConsoleOutput = {0}; //当前Console响应
+    uint16_t usByteOffset;  //表示当前正在处理连续数据块中的第几个字节
+    uint16_t usReadPosition;        //当前已经处理到DMA循环缓冲区的哪个位置
+    uint16_t usWritePosition;      //下一次DMA写入位置
     uint16_t usChunkLength; //本次处理的数据块长度
 
     (void)pvParameters;
@@ -198,6 +200,11 @@ static void prvSerialRxTask(void *pvParameters)
     pucRxBuffer = BspUsart1_RxDmaGetBuffer();
     usReadPosition = 0U;
 
+    /*
+    * Console由Serial RX Task单独拥有，
+    * 必须在开始接收字节前重置其行协议状态。
+    */
+    AppConsole_Init();
     /*
      * 当前已经处于Task上下文，调度器也已经运行，
      * 此时才启动RX DMA和允许USART1 IDLE中断。
@@ -207,9 +214,10 @@ static void prvSerialRxTask(void *pvParameters)
     for (;;)
     {
         /*
-         * 没有IDLE事件时进入Blocked状态。
-         * ISR只通知Task，不在中断中复制或回显数据。
-         */
+        * 没有IDLE事件时进入Blocked状态。
+        * ISR只通知Task，不在中断中复制或解析接收数据，
+        * 也不生成Console响应。
+        */
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         /*
@@ -237,25 +245,32 @@ static void prvSerialRxTask(void *pvParameters)
             }
 
             /*
-             * AppSerial_Write()单条消息最多接受128字节，
-             * 因此较长数据必须拆成多个Queue消息。
-             */
-            if (usChunkLength >
-                APP_SERIAL_TX_MESSAGE_MAX_LENGTH)
+            * 当前数据块保证不会跨越DMA缓冲区末尾，
+            * 因此usReadPosition + usByteOffset不会越界。
+            */
+            for (usByteOffset = 0U;
+                usByteOffset < usChunkLength;
+                usByteOffset++)
             {
-                usChunkLength =
-                    APP_SERIAL_TX_MESSAGE_MAX_LENGTH;
-            }
-
-            if (AppSerial_Write(
-                    &pucRxBuffer[usReadPosition],
-                    usChunkLength) == false)
-            {
-                /*
-                 * 当前回显实验不允许RX Task无限等待TX Queue。
-                 * Queue满时记录丢弃，并继续推进读取位置。
-                 */
-                s_ulRxEchoDropCount++;
+                if (AppConsole_ProcessByte(
+                        pucRxBuffer[usReadPosition + usByteOffset],
+                        &xConsoleOutput) == true)
+                {
+                    /*
+                    * Console响应均为静态只读数据。
+                    * AppSerial_Write()会立即复制进私有TX Queue。
+                    */
+                    if (AppSerial_Write(
+                            xConsoleOutput.pucData,
+                            xConsoleOutput.usLength) == false)
+                    {
+                        /*
+                        * 不阻塞RX Task，避免等待TX时让DMA循环缓冲区
+                        * 中尚未处理的数据被覆盖。
+                        */
+                        s_ulConsoleResponseDropCount++;
+                    }
+                }
             }
 
             usReadPosition += usChunkLength;
@@ -274,9 +289,10 @@ bool AppSerialRxTask_Create(void)
 {
     BaseType_t xCreateResult;
 
-    /*
-     * RX回显依赖现有TX Queue，而且RX Task只允许创建一次。
-     */
+   /*
+    * Console响应提交依赖现有TX Queue，
+    * 而且RX Task只允许创建一次。
+    */
     if ((s_xSerialTxQueue == NULL) ||
         (s_xSerialRxTaskHandle != NULL))
     {
