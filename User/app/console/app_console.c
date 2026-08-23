@@ -36,7 +36,9 @@ static bool s_xPreviousByteWasCarriageReturn = false;
 static const uint8_t s_ucHelpResponse[] =
     "Commands:\r\n"
     "  help     - list commands\r\n"
-    "  version  - show console version\r\n";
+    "  version  - show console version\r\n"
+    "  task     - show task state, stack and CPU\r\n"
+    "  heap     - show FreeRTOS heap usage\r\n";
 
 static const uint8_t s_ucVersionResponse[] =
     "STM32F103 FreeRTOS Console v0.1\r\n";
@@ -67,6 +69,7 @@ static bool prvCompleteLine(AppConsoleOutput_t *pOutput)
 {
     if (s_xDiscardUntilEndOfLine == true)
     {
+        pOutput->eType = APP_CONSOLE_OUTPUT_TEXT;
         pOutput->pucData = s_ucLineTooLongResponse;
         pOutput->usLength =
             (uint16_t)(sizeof(s_ucLineTooLongResponse) - 1U);
@@ -92,18 +95,37 @@ static bool prvCompleteLine(AppConsoleOutput_t *pOutput)
     //strcmp比较两个C字符串是否相等，返回0表示相等
     if (strcmp(s_cLineBuffer, "help") == 0)
     {
+        pOutput->eType = APP_CONSOLE_OUTPUT_TEXT;
         pOutput->pucData = s_ucHelpResponse;
         pOutput->usLength =
             (uint16_t)(sizeof(s_ucHelpResponse) - 1U);
     }
     else if (strcmp(s_cLineBuffer, "version") == 0)
     {
+        pOutput->eType = APP_CONSOLE_OUTPUT_TEXT;
         pOutput->pucData = s_ucVersionResponse;
         pOutput->usLength =
             (uint16_t)(sizeof(s_ucVersionResponse) - 1U);
     }
+    else if (strcmp(s_cLineBuffer, "task") == 0)
+    {
+        /*
+        * Console只报告命令类型，不直接调用FreeRTOS。
+        */
+        pOutput->eType =
+            APP_CONSOLE_OUTPUT_RTOS_TASK_LIST;
+    }
+    else if (strcmp(s_cLineBuffer, "heap") == 0)
+    {
+        /*
+        * Console只报告Heap诊断请求，不直接依赖FreeRTOS。
+        */
+        pOutput->eType =
+            APP_CONSOLE_OUTPUT_RTOS_HEAP;
+    }
     else
     {
+        pOutput->eType = APP_CONSOLE_OUTPUT_TEXT;
         pOutput->pucData = s_ucUnknownCommandResponse;
         pOutput->usLength =
             (uint16_t)(sizeof(s_ucUnknownCommandResponse) - 1U);
@@ -149,6 +171,7 @@ bool AppConsole_ProcessByte(
     /*
      * 默认没有输出，避免调用者误用上一次响应。
      */
+    pOutput->eType = APP_CONSOLE_OUTPUT_NONE;
     pOutput->pucData = NULL;
     pOutput->usLength = 0U;
 

@@ -34,6 +34,7 @@
 - [26. USART1 TX DMA 与 Task Notification](#26-usart1-tx-dma-与-task-notification)
 - [27. USART1 RX循环DMA、IDLE与Task Notification](#27-usart1-rx循环dmaidle与task-notification)
 - [28. 最小Console行协议与Serial RX Task接入](#28-最小console行协议与serial-rx-task接入)
+- [29. FreeRTOS任务、运行时间与Heap诊断](#29-freertos任务运行时间与heap诊断)
 
 ## 1. 学习目标与边界
 
@@ -54,7 +55,7 @@
 - 中断服务函数何时可以调用 FreeRTOS `FromISR` API。
 - 如何通过 ELF、MAP、GDB 断点和实机现象验证移植结果。
 
-### 1.2 当前最小 Demo 边界
+### 1.2 第一阶段最小 Demo 边界（历史基线）
 
 第一阶段只实现：
 
@@ -1480,13 +1481,14 @@ STM32F103ZET6 的 64 KiB SRAM 还需要容纳：
 | 4B | 理解 GNU 启动文件、链接脚本和 MCU 上电流程 | 已结合当前工程讲解，待后续通过 MAP、反汇编和 GDB 验证 |
 | 5 | 理解并编写 `FreeRTOSConfig.h` | 已由用户完成配置与Hook；动态分配、Queue和Task Notification均已进入运行路径 |
 | 6 | 将最小内核加入 CMake | 已完成首次链接；`-Wl,-z,noexecstack`已在正式ELF中验证生效，`GNU_STACK`为`RW` |
-| 6A | 规范固件目录分层 | LED、Key、USART BSP和对应应用模块均已按功能域落位并完成构建/实机回归 |
+| 6A | 规范固件目录分层 | LED、Key、USART、TIM6 BSP以及对应应用、Console和诊断模块均已按功能域落位并完成构建/实机回归 |
 | 7 | 用户编写 LED Task 并启动调度器 | `main.c`已调用`xTaskCreate()`和`vTaskStartScheduler()`并成功生成ELF |
-| 8 | ELF、MAP、异常符号和内存检查 | 符号、Heap、异常向量、内存边界和GNU_STACK复核通过 |
+| 8 | ELF、MAP、异常符号和内存检查 | 符号、Heap、异常向量、内存边界、GNU_STACK以及TIM6运行统计符号复核通过 |
 | 9 | 烧录、GDB 和连续运行验收 | 调度器、Queue Demo及USART1 TX/RX DMA → ISR → Task Notification闭环已完成真实硬件验证 |
 | 10 | 建立有界Serial TX Queue | 私有Queue、消息复制、FIFO发送和单一TX所有权已完成构建与真实硬件验证 |
 | 11 | 建立USART1 RX循环DMA闭环 | Channel 5循环接收、IDLE通知、CNDTR位置计算、原始字节回显和缓冲区回绕已完成构建与真实硬件验证 |
 | 12 | 建立最小Console行协议 | 有界行缓冲、CR/LF/CRLF、退格、超长整行丢弃、只读命令分发和边界恢复已完成构建与真实硬件验证 |
+| 13 | 建立任务、运行时间和Heap诊断 | Trace/Stats、TIM6 10 kHz、`task`/`heap`以及栈、CPU、Heap实机验证已完成 |
 
 ## 16. 当前应掌握的核心结论
 
@@ -2297,7 +2299,7 @@ Cortex-M3换成Cortex-M4F
 
 ## 21. 第5课：设计 `FreeRTOSConfig.h`
 
-### 21.1 本课目标和当前边界
+### 21.1 本课目标和第一阶段边界
 
 这一课的目标不是从网上复制一份能够编译的配置文件，而是建立下面这条推导链：
 
@@ -2315,7 +2317,9 @@ tasks.c、heap_4.c和ARM_CM3端口按配置参与编译
 用编译、ELF/MAP、GDB和实机现象验证
 ```
 
-本课只完成“理解和设计”。当前 `User/FreeRTOSConfig.h` 仍为0字节，尚未由用户填写；FreeRTOS 源码也还没有加入 CMake，因此本章出现的数值都必须区分为：
+本章记录最小LED Demo设计时的历史阶段。本章中的“当前”和“首版”均指当时；仓库后续完成情况见第15章以及第26～29章。
+
+本课当时只完成“理解和设计”。`User/FreeRTOSConfig.h` 仍为0字节，尚未由用户填写；FreeRTOS源码也还没有加入CMake，因此本章出现的数值都必须区分为：
 
 - 已确认的硬件事实；
 - 依据事实推导出的首版候选配置；
@@ -3326,7 +3330,7 @@ FreeRTOS Heap不等于C运行库Heap，任务PSP栈也不等于异常和启动�
 6. 任务栈从FreeRTOS Heap内部划分，RAM估算时不重复统计。
 7. 不把8 KiB候选写成已经通过MAP或实机验证的最终值。
 
-当前工程最终采用上述7个内存配置宏。8 KiB Heap已经进入ELF并完成静态内存边界检查；剩余Heap和任务栈高水位仍需在运行阶段测量。
+最小Demo当时最终采用上述7个内存配置宏，8 KiB Heap已经进入ELF并完成静态内存边界检查。后续诊断实测该配置只剩768字节，当前已调整为24 KiB；各任务栈高水位也已完成实机测量，详见第29章。
 
 ### 21.21 补充理解：为什么释放Heap内存时默认不清零
 
@@ -4297,7 +4301,7 @@ README/学习记录
 
 `configUSE_POSIX_ERRNO=0` 同样表示不在每个TCB中保存FreeRTOS POSIX风格的任务级错误号。
 
-#### Trace、统计和Queue Registry为什么关闭
+#### 首版为什么关闭Trace、统计和Queue Registry
 
 ```text
 configUSE_TRACE_FACILITY=0
@@ -4307,7 +4311,7 @@ configUSE_STATS_FORMATTING_FUNCTIONS=0
     不加入依赖字符串格式化的旧统计输出函数
 
 configGENERATE_RUN_TIME_STATS=0
-    不统计每个任务的CPU运行时间；当前也没有提供独立高频计时器
+    不统计每个任务的CPU运行时间；当时也没有提供独立高频计时器
 
 configQUEUE_REGISTRY_SIZE=0
     当前没有Queue/Semaphore对象供内核感知调试器注册
@@ -4657,7 +4661,7 @@ V11.3.0中可以看到任务列表和运行时间统计的文本接口，包括�
 
 格式化函数会带来字符串处理代码、输出缓冲区、栈占用以及采集期间的调度影响。当前版本的有关实现还要求支持动态内存分配。FreeRTOS源码注释也更建议正式产品读取原始状态数据后，由应用按需输出，避免在内核统计API里进行大段格式化。
 
-当前最小Demo既不需要任务表格，也未启用Trace和运行时间计数，所以设为0。
+最小LED Demo当时既不需要任务表格，也未启用Trace和运行时间计数，所以设为0。当前诊断阶段已把这三个宏设为1，详见第29章。
 
 #### `configGENERATE_RUN_TIME_STATS`：统计各任务实际占用CPU的时间
 
@@ -4699,7 +4703,7 @@ portGET_RUN_TIME_COUNTER_VALUE()
 
 这个计数源通常独立于1 kHz系统Tick，并应比Tick具有更高分辨率。还要考虑计数器位宽、回绕、时钟频率以及低功耗时是否继续计数。它会增加每任务计数字段和上下文切换附近的读取开销。
 
-当前尚未选择和验证独立统计计时器，因此设为0。不要为了看到一个“CPU百分比”就随便复用一个会停止、清零或频繁改频的计数器。
+最小LED Demo当时尚未选择和验证独立统计计时器，因此设为0。当前已经用TIM6建立并实机验证10 kHz运行时间计数，详见第29章；仍然不能为了看到一个“CPU百分比”就随便复用会停止、清零或频繁改频的计数器。
 
 #### `configQUEUE_REGISTRY_SIZE`：内核对象名称注册表容量
 
@@ -4877,7 +4881,8 @@ configSTACK_DEPTH_TYPE uxTaskGetStackHighWaterMark2( TaskHandle_t xTask );
 
 ```text
 这三个功能可以用于本项目，也很适合后续学习和调试；
-当前设为0只是为了先完成最小调度闭环，不是因为它们不能用。
+最小调度阶段设为0只是为了控制变量，不是因为它们不能用；
+当前已经按第29章的方案启用并完成实机验证。
 ```
 
 它们不强制要求串口，也不会自动提供Shell。FreeRTOS Kernel负责生成数据，至于在哪里查看，由应用选择。
@@ -4967,7 +4972,7 @@ ISR到CLI Task的通知
 
 RT-Thread把FinSH/msh作为一套现成组件提供，所以用户容易把“任务信息命令”和“内核统计能力”看成一个整体。FreeRTOS Kernel的设计更精简，它本身不集成这种交互Shell。FreeRTOS生态中存在独立的CLI组件，但它仍然需要接入具体传输接口和命令，当前移植阶段没有必要提前加入。
 
-#### 为什么当前不建议三个宏立即全部打开
+#### 为什么最小调度阶段不立即全部打开
 
 原因是学习阶段需要控制变量。如果调度器、任务、运行时间计时器、`snprintf()`、大字符缓冲区和UART Shell一次全部加入，出现故障时很难判断问题属于哪一层：
 
@@ -5020,6 +5025,8 @@ CLI接收丢字符？
 ```
 
 这个顺序既能让学习者真正用上FreeRTOS的观察能力，又能保证每次只新增一个故障来源。
+
+当前项目已经按这条路径完成：Console提供 `task`和 `heap`入口，诊断模块生成任务状态、运行时间和Heap报告，TIM6提供独立计数源；最终结构与验收结论见第29章。
 
 #### 统计功能与实时性的边界
 
@@ -8108,11 +8115,11 @@ DMA写位置与软件读位置计算
 ISR通知Serial RX Task处理新增字节
 ```
 
-该RX硬件通路已经完成，具体原理和实机验收见第27章；随后加入的行缓冲、回车换行、退格和 `help`/`version`命令见第28章。运行统计仍是后续独立步骤。
+该RX硬件通路已经完成，具体原理和实机验收见第27章；随后加入的行缓冲、回车换行、退格和 `help`/`version`命令见第28章，任务、CPU与Heap诊断见第29章。
 
 ### 26.12 有界Serial TX Queue的所有权与FIFO验证
 
-当前Serial模块内部创建长度为4的私有Queue，每个元素保存一条最长128字节的消息及其实际长度。Queue对外只暴露 `AppSerial_Write()`，不把Queue Handle、USART寄存器或DMA通道暴露给生产者。
+当前Serial模块内部创建长度为4的私有Queue，每个元素保存一条最长512字节的消息及其实际长度。Queue对外只暴露 `AppSerial_Write()`，不把Queue Handle、USART寄存器或DMA通道暴露给生产者。早期原始回显实验曾使用128字节上限；接入完整任务诊断报告后扩大为512字节。
 
 ```text
 main或其他Task
@@ -8137,7 +8144,7 @@ DMA1 Channel 4 → USART1_TX
 
 Queue长度为4表示系统最多缓存4条尚未被消费者取走的消息，并不表示可以同时进行4次DMA传输。USART1 TX和DMA1 Channel 4在任一时刻仍只处理一条消息。Queue满时，当前非阻塞写接口立即报告失败，让上层明确选择丢弃、计数或稍后重试，避免低优先级日志无限消耗RAM或长期阻塞关键Task。
 
-Queue由FreeRTOS在运行时从现有 `ucHeap`中分配控制块和元素存储区。因此它会减少8 KiB FreeRTOS Heap的剩余空间，但Queue元素容量不会以同样大小直接增加ELF的 `bss`；`ucHeap`本身早已作为固定8 KiB数组计入 `bss`。
+Queue由FreeRTOS在运行时从 `ucHeap`中分配控制块和元素存储区。因此它会减少FreeRTOS Heap的剩余空间，但Queue元素容量不会以同样大小直接增加ELF的 `bss`；`ucHeap`数组本身已经整体计入 `bss`。最小Demo初始使用8 KiB，接入512字节TX消息、诊断和后续扩展余量评估后调整为24 KiB。
 
 本阶段向Queue连续提交两条启动消息，电脑端按相同顺序完整收到两条消息。该现象至少验证了：
 
@@ -8147,7 +8154,7 @@ Queue由FreeRTOS在运行时从现有 `ucHeap`中分配控制块和元素存储�
 - Task在收到通知后才安全复用工作消息并启动第二条DMA。
 - Serial TX Task是唯一发送所有者，没有两个生产者直接争用DMA通道。
 
-TX Queue本身不是日志或Console系统。RX硬件通路在第27章完成，最小Console行协议在第28章接入；消息级别、格式化和运行统计仍需继续逐层添加。
+TX Queue本身不是日志或Console系统。RX硬件通路在第27章完成，Console行协议在第28章接入，任务格式化和运行统计在第29章完成；消息级别日志仍应作为独立功能评估。
 
 ## 27. USART1 RX循环DMA、IDLE与Task Notification
 
@@ -8274,7 +8281,7 @@ USART BSP拥有RX DMA静态缓冲区并负责DMA、CNDTR和IDLE硬件状态；�
 
 当前最小实现存在明确容量边界：仅凭 `readPosition`和 `writePosition`无法区分“缓冲区为空”和“DMA恰好追满一整圈”。因此一次连续无IDLE输入以及Task未及时处理的累计数据必须严格小于256字节。后续若要支持持续数据流，需要增加DMA半传输/传输完成事件或单调生产计数，而不是简单扩大数组后宣称问题消失。
 
-Serial RX Task当前分配192 words栈空间；该数值已支持本阶段实机闭环，但尚未通过Stack High Water Mark确定最终余量，因此不能仅凭“没有触发栈溢出Hook”就认定栈大小已经定稿。
+第27章原始RX闭环曾为Serial RX Task分配192 words。接入使用FreeRTOS格式化接口的诊断命令后，当前栈深度调整为512 words，实测Stack High Water Mark剩余348 words；栈大小以最终调用链实测为依据，不能仅凭“没有触发栈溢出Hook”定稿。
 
 ### 27.8 构建与真实硬件验收结论
 
@@ -8311,7 +8318,7 @@ Console行缓冲
     ↓ 处理CR/LF和退格
 完整命令行
     ↓
-少量只读命令：help、version
+第28章初版只读命令：help、version
     ↓
 AppSerial_Write()输出响应
 ```
@@ -8401,7 +8408,7 @@ Console响应是模块内部的 `static const`数组。`AppConsole_ProcessByte()
 | 其他非空行 | 返回 `ERROR: unknown command` |
 | 超长行 | 返回 `ERROR: line too long`，然后恢复接收下一行 |
 
-命令按小写字符串精确比较，不裁剪前后空格，不做大小写归一。当前也没有参数解析、动态命令注册、命令历史、方向键编辑、设备端逐字符回显或运行统计命令。所有固定响应都小于 `AppSerial_Write()`的128字节单条消息上限。
+命令按小写字符串精确比较，不裁剪前后空格，不做大小写归一。第28章初版没有参数解析、动态命令注册、命令历史、方向键编辑、设备端逐字符回显或运行统计命令；第29章在不改变行协议的前提下增加 `task`和 `heap`。当前单条TX消息上限为512字节。
 
 ### 28.7 构建与真实硬件验收结论
 
@@ -8431,4 +8438,116 @@ ELF中 `AppConsole_Init()`、`AppConsole_ProcessByte()`、`AppSerialRxTask_Creat
 
 ### 28.8 下一边界
 
-最小Console闭环完成后，运行统计、RX Task栈高水位和更复杂的命令参数仍是独立功能，不能仅凭当前命令测试推断已经完成。Serial RX Task继续使用192 words栈空间，最终余量仍需通过Stack High Water Mark实测。固化本阶段Git基线后，再按工程路线进入双路ADC Queue、Binary Semaphore和真实共享资源同步实验；本章不提前引入CAN、W5500、MQTT、FTP或OTA。
+最小Console闭环完成后，任务运行统计、栈高水位和Heap诊断作为第29章的独立功能完成；更复杂的命令参数仍不在当前范围。诊断阶段固化Git基线后，再按工程路线进入双路ADC Queue、Binary Semaphore和真实共享资源同步实验；本章不提前引入CAN、W5500、MQTT、FTP或OTA。
+
+## 29. FreeRTOS任务、运行时间与Heap诊断
+
+### 29.1 目标、分层与数据流
+
+本阶段在现有Console上增加 `task`和 `heap`，但不让Console直接依赖FreeRTOS。Console仍只负责把输入行识别为一种输出请求；Serial RX Task在Task上下文调用诊断模块，报告最后通过已有 `AppSerial_Write()`复制进入私有TX Queue：
+
+```text
+Console：识别task或heap
+    ↓ 输出请求类型
+Serial RX Task
+    ↓
+app_rtos_diagnostics：调用FreeRTOS诊断API并生成文本
+    ↓
+AppSerial_Write()复制报告
+    ↓
+Serial TX Queue → Serial TX Task → DMA1 Channel 4
+```
+
+`User/app/diagnostics/`只依赖FreeRTOS API，不访问USART或TIM寄存器；`User/bsp/timer/`只处理TIM6、RCC、DBGMCU和中断状态，不依赖应用层。诊断没有新增Task或Queue，也没有改变USART ISR、DMA所有权和Console行协议。
+
+### 29.2 三个配置开关与官方格式化接口
+
+当前启用：
+
+```c
+configUSE_TRACE_FACILITY = 1
+configUSE_STATS_FORMATTING_FUNCTIONS = 1
+configGENERATE_RUN_TIME_STATS = 1
+```
+
+三者职责不同：
+
+| 配置 | 作用 |
+| --- | --- |
+| `configUSE_TRACE_FACILITY` | 让TCB和 `TaskStatus_t`具备任务编号、基础优先级、运行计数等快照所需信息 |
+| `configUSE_STATS_FORMATTING_FUNCTIONS` | 编译 `vTaskListTasks()`和 `vTaskGetRunTimeStatistics()`等便捷文本格式化函数 |
+| `configGENERATE_RUN_TIME_STATS` | 在任务切换时读取独立计数器，把各任务处于Running状态的时间累计到TCB |
+
+`task`命令依次调用两个官方格式化接口：第一张表显示任务状态、优先级、栈高水位和任务编号，第二张表显示累计运行计数和CPU百分比。两次调用取得的是相邻时刻的两个快照，不是严格同一瞬间；当前低频人工诊断允许这点微小时间差，避免为追求完全一致引入自定义快照和格式化复杂度。
+
+这两个便捷接口内部都会临时申请 `TaskStatus_t`数组。当前有5个任务，`sizeof(TaskStatus_t)=40`字节，因此单次正文快照需要200字节，再加 `heap_4`块管理开销；函数结束后会释放。它们适合低频调试，不应放入硬实时周期路径。
+
+### 29.3 TIM6的10 kHz运行时间计数
+
+FreeRTOS Tick为1 kHz，只能提供1 ms粒度，不适合统计很短的任务运行片段。本阶段单独使用TIM6产生10 kHz自由运行计数：
+
+```text
+APB1 PCLK1 = 36 MHz
+APB1分频不为1，TIM6输入时钟 = 72 MHz
+PSC = 7199
+计数频率 = 72 MHz / 7200 = 10 kHz
+每个计数 = 100 us
+ARR = 0xFFFF
+低16位每6.5536 s回绕一次
+```
+
+TIM6更新ISR只把32位软件高位加1并清除更新标志，不调用FreeRTOS API，因此使用逻辑优先级4。低16位硬件计数与32位软件高位组合后有48个有效累计位，通过 `uint64_t`接口返回；在10 kHz下约892年才会回绕。调试器暂停CPU时，DBGMCU同时冻结TIM6，避免断点停留时间被计入某个任务。
+
+FreeRTOS在启动调度器时通过 `portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()`初始化TIM6，并在任务切换路径通过 `portGET_RUN_TIME_COUNTER_VALUE()`读取累计值。当前读取函数使用很短的全局中断屏蔽保证高低位一致；该实现只服务于当前FreeRTOS调用路径，如果未来把它作为通用BSP时间源复用，需要重新评审调用上下文和中断状态恢复方式。
+
+### 29.4 `task`状态表与栈余量
+
+状态字符含义：
+
+| 字符 | Task状态 | 当前常见示例 |
+| --- | --- | --- |
+| `X` | Running | 生成报告时的Serial RX Task |
+| `R` | Ready | 等待CPU的Idle Task |
+| `B` | Blocked | 等待Queue、通知或延时到期的LED、Key、Serial TX Task |
+| `S` | Suspended | 被显式挂起或使用真正无限等待语义的任务 |
+| `D` | Deleted | 已删除但资源尚待Idle Task回收的任务 |
+
+`StackFree`是任务启动以来从未使用过的最小栈空间，单位为 `StackType_t`个数，不是字节。当前Cortex-M3的 `StackType_t`为4字节。实测结果为：Serial RX 348、Idle 118、Key 104、LED 96、Serial TX 96 words。它们均大于0；其中Serial RX配置为512 words，Serial TX配置为256 words。栈高水位用于证明余量，不能只看“没有触发栈溢出Hook”。
+
+### 29.5 `RunCount`与CPU百分比
+
+`RunCount(100us)`表示任务从调度器启动以来累计处于Running状态的计数。空闲系统中Idle Task承担绝大部分时间，因此实测占用99%～100%；Key、LED和Serial任务每次运行时间很短，可能显示 `<1%`，甚至因为100 us分辨率而暂时显示0个计数。CPU百分比是累计整数结果并向下取整，各行显示值不保证精确相加等于100%。
+
+实测累计值从614788继续增加到3212612，跨越多次TIM6低16位回绕后仍保持单调，证明硬件低位、软件高位和TIM6更新ISR已经闭环。
+
+当前V11.3.0默认格式化分支在打印绝对 `RunCount`时会转换为32位 `unsigned int`；内部累计类型和CPU百分比计算仍使用 `uint64_t`。因此设备连续运行约4.97天后，表中的绝对计数只显示累计值低32位，而CPU百分比仍可继续计算。当前学习诊断接受这一显示限制；若以后要求长期显示完整绝对时间，应直接使用 `uxTaskGetSystemState()`取得原始64位字段并自行格式化，而不是修改FreeRTOS上游源码。
+
+### 29.6 `heap`命令与三项数值
+
+`heap`使用 `heap_4.c`官方接口：
+
+| 字段 | 含义 |
+| --- | --- |
+| `Total` | `configTOTAL_HEAP_SIZE`配置的FreeRTOS Heap总字节数 |
+| `Free` | 当前所有空闲块的总字节数 |
+| `MinEverFree` | 调度器启动以来出现过的最低空闲总量 |
+
+`Free`不等于“最大一次可分配块”，也不能单独证明没有碎片；`MinEverFree`是历史低水位，临时分配释放后不会自动升高。执行 `task`时临时申请任务快照数组，结束后 `Free`应恢复，而 `MinEverFree`可能下降一次。重复执行 `task`和 `heap`后，`Free`保持稳定才说明没有持续泄漏。
+
+初始8 KiB Heap在现有任务、512字节×4的TX Queue和任务栈创建完成后只剩768字节，不足以继续增加ADC Task与Queue。当前把Heap调整为24 KiB；它仍位于STM32内部64 KiB SRAM中，已经整体计入ELF的 `bss`，与链接脚本的C Heap、MSP和板载外部RAM都不是同一个区域。外部RAM尚未接入链接脚本或FreeRTOS分配器。
+
+### 29.7 缓冲区、构建与实机结论
+
+任务报告使用512字节静态缓冲区，Heap报告使用128字节静态缓冲区；只有Serial RX Task触发生成，随后 `AppSerial_Write()`立即复制到TX Queue。静态报告缓冲区不从FreeRTOS Heap反复分配，也不会在DMA发送期间被诊断模块直接复用。
+
+最终Debug构建结果：
+
+```text
+text：17408 B
+data：88 B
+bss：28424 B
+Flash：17496 B / 512 KiB，3.34%
+RAM：28512 B / 64 KiB，43.51%
+```
+
+真实硬件已经确认：两个任务表头和Heap表头完整；任务状态、优先级、栈余量和任务编号合理；TIM6跨多次6.5536 s回绕后计数连续；空闲系统Idle占用符合预期；重复执行任务和Heap诊断后当前空闲量稳定。当前诊断闭环完成后，下一阶段进入双路ADC Queue实验，不提前引入CAN、W5500、MQTT、FTP或OTA。

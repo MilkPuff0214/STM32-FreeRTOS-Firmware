@@ -8,7 +8,7 @@
  * 单条串口消息的最大有效长度，单位为字节。
  * 固定上限可以保证Queue和RAM占用是可计算的。
  */
-#define APP_SERIAL_TX_MESSAGE_MAX_LENGTH 128U
+#define APP_SERIAL_TX_MESSAGE_MAX_LENGTH 512U
 /*
  * 创建Serial TX Task。
  *

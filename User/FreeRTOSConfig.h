@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include "system_stm32f10x.h"
-
+#include "bsp_run_time_counter.h"
 
 #define configCPU_CLOCK_HZ                ( SystemCoreClock )   //让FreeRTOS取得当前72 MHz内核时钟。
 #define configTICK_RATE_HZ                 1000U        //设置1000 Hz，即1 ms/Tick
@@ -28,7 +28,7 @@ LED Task的TCB和栈
 分配器管理信息
 剩余空闲空间
  */
-#define configTOTAL_HEAP_SIZE                      ( 8U * 1024U )   //总堆大小为8KB
+#define configTOTAL_HEAP_SIZE                      ( 24U * 1024U )   //总堆大小为24KB
 #define configMINIMAL_STACK_SIZE                   128U     //Idle Task栈大小:128 * 4  = 512 bytes，单位为words，1 word=4 bytes
 #define configAPPLICATION_ALLOCATED_HEAP           0        //表示由 heap_4.c 自己定义 ucHeap[]
 #define configSTACK_ALLOCATION_FROM_SEPARATE_HEAP  0        //表示任务的TCB和任务栈都从同一个FreeRTOS Heap分配
@@ -83,16 +83,27 @@ LED Task的TCB和栈
 #define configUSE_STREAM_BUFFERS                 0  /* 未加入stream_buffer.c，暂不使用流/消息缓冲区。 */
 #define configUSE_CO_ROUTINES                    0  /* 未加入croutine.c，本项目使用普通Task。 */
 #define configUSE_NEWLIB_REENTRANT               0  /* 不为每个TCB分配Newlib重入结构，减少RAM占用。 */
-#define configUSE_TRACE_FACILITY                 0  /* 暂不增加Trace所需的TCB字段和相关功能。 */
-#define configUSE_STATS_FORMATTING_FUNCTIONS     0  /* 暂不编译依赖字符串格式化的旧式任务统计函数。 */
-#define configGENERATE_RUN_TIME_STATS            0  /* 暂不统计任务CPU时间，也未提供独立统计计时器。 */
+#define configUSE_TRACE_FACILITY                 1  /* 启用TaskStatus_t和任务状态快照接口,会增加任务控制块(TCB)的大小。 */
+#define configUSE_STATS_FORMATTING_FUNCTIONS     1  /* 启用任务列表等文本格式化诊断接口。 */
+#define configGENERATE_RUN_TIME_STATS            1  /* 让每个任务的TCB累计Running状态时间 */
+#define configRUN_TIME_COUNTER_TYPE              uint64_t   /* 任务累计时间和系统总时间使用64位。 */
+/*
+ * FreeRTOS启动调度器时自动初始化TIM6。
+ * 每次任务切换时读取当前运行时间计数。
+ */
+#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() \
+    BspRunTimeCounter_Init()
+
+#define portGET_RUN_TIME_COUNTER_VALUE()         \
+    BspRunTimeCounter_GetValue()
+
 #define configQUEUE_REGISTRY_SIZE                0  /* 当前没有Queue/Semaphore需要注册给调试器。 */
 #define configNUM_THREAD_LOCAL_STORAGE_POINTERS  0  /* 不在每个TCB中预留应用线程局部指针。 */
 #define configUSE_APPLICATION_TASK_TAG           0  /* 不为任务增加应用Tag/Hook字段。 */
 #define configUSE_POSIX_ERRNO                    0  /* 不在每个TCB中保存任务级FreeRTOS_errno。 */
 
 /* API inclusion configuration. */
-#define INCLUDE_vTaskDelay                       1  /* 编译vTaskDelay()，供LED Task阻塞延时。 */
+#define INCLUDE_vTaskDelay                       1   /* 编译vTaskDelay()，供Key Task周期扫描时阻塞等待。 */
 #define INCLUDE_uxTaskGetStackHighWaterMark      1  /* 启用历史最小剩余任务栈查询，单位为words。 */
 #define INCLUDE_uxTaskGetStackHighWaterMark2     0  /* 不重复启用返回configSTACK_DEPTH_TYPE的第二套API。 */
 

@@ -10,11 +10,12 @@
 
 #include "bsp_usart.h"
 #include "app_console.h"
+#include "app_rtos_diagnostics.h"
 
 /* 最多缓存4条尚未发送的串口消息。 */
 #define APP_SERIAL_TX_QUEUE_LENGTH    4U
 
-#define APP_SERIAL_TX_STACK_DEPTH     configMINIMAL_STACK_SIZE
+#define APP_SERIAL_TX_STACK_DEPTH     256U
 #define APP_SERIAL_TX_PRIORITY        (tskIDLE_PRIORITY + 1U)
 
 typedef struct
@@ -42,7 +43,7 @@ static volatile uint32_t s_ulTxDmaStartFailureCount = 0U;
  * RX Task会调用AppSerial_Write()并产生额外调用栈，
  * 因此暂时比configMINIMAL_STACK_SIZE多保留一些空间。
  */
-#define APP_SERIAL_RX_STACK_DEPTH    192U
+#define APP_SERIAL_RX_STACK_DEPTH    512U
 #define APP_SERIAL_RX_PRIORITY       (tskIDLE_PRIORITY + 1U)
 
 static TaskHandle_t s_xSerialRxTaskHandle = NULL;  //接收任务的任务句柄
@@ -52,7 +53,10 @@ static TaskHandle_t s_xSerialRxTaskHandle = NULL;  //接收任务的任务句柄
  * 后续可以通过诊断命令读取该计数。
  */
 static volatile uint32_t s_ulConsoleResponseDropCount = 0U;
-
+/*
+ * 诊断报告生成失败与TX Queue满是两类故障，不能混为一个计数。
+ */
+static volatile uint32_t s_ulDiagnosticsBuildFailureCount = 0U;
 
 static void prvSerialTxTask(void *pvParameters)
 {
@@ -190,6 +194,7 @@ static void prvSerialRxTask(void *pvParameters)
 {
     const uint8_t *pucRxBuffer; //指向USART1 RX DMA循环缓冲区的起始地址
     AppConsoleOutput_t xConsoleOutput = {0}; //当前Console响应
+    AppRtosDiagnosticsReport_t xDiagnosticsReport = {0};  //当前诊断报告
     uint16_t usByteOffset;  //表示当前正在处理连续数据块中的第几个字节
     uint16_t usReadPosition;        //当前已经处理到DMA循环缓冲区的哪个位置
     uint16_t usWritePosition;      //下一次DMA写入位置
@@ -252,23 +257,62 @@ static void prvSerialRxTask(void *pvParameters)
                 usByteOffset < usChunkLength;
                 usByteOffset++)
             {
-                if (AppConsole_ProcessByte(
-                        pucRxBuffer[usReadPosition + usByteOffset],
-                        &xConsoleOutput) == true)
+                if (AppConsole_ProcessByte(pucRxBuffer[usReadPosition + usByteOffset], &xConsoleOutput) == true)
                 {
-                    /*
-                    * Console响应均为静态只读数据。
-                    * AppSerial_Write()会立即复制进私有TX Queue。
-                    */
-                    if (AppSerial_Write(
-                            xConsoleOutput.pucData,
-                            xConsoleOutput.usLength) == false)
+                    switch (xConsoleOutput.eType)
                     {
-                        /*
-                        * 不阻塞RX Task，避免等待TX时让DMA循环缓冲区
-                        * 中尚未处理的数据被覆盖。
-                        */
-                        s_ulConsoleResponseDropCount++;
+                        case APP_CONSOLE_OUTPUT_TEXT:
+                            if (AppSerial_Write(
+                                    xConsoleOutput.pucData,
+                                    xConsoleOutput.usLength) == false)
+                            {
+                                s_ulConsoleResponseDropCount++;
+                            }
+                            break;
+
+                        case APP_CONSOLE_OUTPUT_RTOS_TASK_LIST:
+                            if (AppRtosDiagnostics_BuildTaskList(
+                                    &xDiagnosticsReport) == false)
+                            {
+                                s_ulDiagnosticsBuildFailureCount++;
+                            }
+                            else
+                            {
+                                /*
+                                * 诊断报告位于模块静态缓冲区；
+                                * AppSerial_Write()会立即复制进TX Queue。
+                                */
+                                if (AppSerial_Write(
+                                        xDiagnosticsReport.pucData,
+                                        xDiagnosticsReport.usLength) == false)
+                                {
+                                    s_ulConsoleResponseDropCount++;
+                                }
+                            }
+                            break;
+                        case APP_CONSOLE_OUTPUT_RTOS_HEAP:
+                            if (AppRtosDiagnostics_BuildHeapReport(
+                                    &xDiagnosticsReport) == false)
+                            {
+                                s_ulDiagnosticsBuildFailureCount++;
+                            }
+                            else
+                            {
+                                /*
+                                * Heap报告位于诊断模块静态缓冲区，
+                                * AppSerial_Write()会立即复制进TX Queue。
+                                */
+                                if (AppSerial_Write(
+                                        xDiagnosticsReport.pucData,
+                                        xDiagnosticsReport.usLength) == false)
+                                {
+                                    s_ulConsoleResponseDropCount++;
+                                }
+                            }
+                            break;
+                        case APP_CONSOLE_OUTPUT_NONE:
+                        default:
+                            break;
                     }
                 }
             }
