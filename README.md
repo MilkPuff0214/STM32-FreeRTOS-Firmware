@@ -1,10 +1,10 @@
 # STM32F103ZET6 固件工程
 
-本目录承载野火 STM32F103 霸道 V2 的固件代码。工程已经先用不依赖 FreeRTOS 的裸机 LED 冒烟测试验证 ARM GCC 工具链、CMake + GNU Make 构建流程、GCC 启动文件、链接脚本、系统时钟和 GPIO；随后由用户亲自完成 FreeRTOS Kernel V11.3.0 最小调度闭环、按键 Queue Demo、USART1 TX DMA + Task Notification、USART1 RX循环DMA + IDLE回显闭环、Console行协议与命令分发，以及任务状态、栈余量、CPU占用和FreeRTOS Heap诊断。
+本目录承载野火 STM32F103 霸道 V2 的固件代码。工程已经先用不依赖 FreeRTOS 的裸机 LED 冒烟测试验证 ARM GCC 工具链、CMake + GNU Make 构建流程、GCC 启动文件、链接脚本、系统时钟和 GPIO；随后由用户亲自完成 FreeRTOS Kernel V11.3.0 最小调度闭环、按键 Queue Demo、USART1 TX DMA + Task Notification、USART1 RX循环DMA + IDLE回显闭环、Console行协议与命令分发、任务状态/栈/CPU/Heap诊断，以及ADC1双通道低频采样闭环。
 
 FreeRTOS 的原理、术语、源码关系、自测题和逐步移植学习记录见 [FreeRTOS 学习与移植笔记](FreeRTOS学习.md)。本 README 继续作为固件工程状态、构建方法和验收结果的入口。
 
-裸机程序已经通过编译、链接和 ELF 静态检查，并已由用户在真实硬件上完成 CMSIS-DAP + OpenOCD 下载、PB5 红灯闪烁和 GDB 断点调试验证。FreeRTOS 调度器、Key Task → Queue → LED Task、USART1 TX DMA1 Channel 4、有界Serial TX Queue、USART1 RX DMA1 Channel 5循环接收、USART IDLE通知和原始字节回显均已完成构建与真实硬件验证。200字节加100字节的分批输入曾验证128字节发送分块和RX缓冲区回绕；随后加入的Console已通过行缓冲、CR/LF/CRLF、退格、`help`/`version`/`task`/`heap`、未知命令、空行、同批多命令及63/64字符边界恢复验收。TIM6 10 kHz运行时间计数、任务状态/栈/CPU表和24 KiB FreeRTOS Heap诊断也已形成闭环。下一步固化诊断阶段Git基线，再单独进入双路ADC Queue学习实验，不提前加入CAN、W5500、MQTT、FTP或Bootloader。Codex只提供讲解、只读检查并维护Markdown，不直接修改固件代码。
+裸机程序已经通过编译、链接和 ELF 静态检查，并已由用户在真实硬件上完成 CMSIS-DAP + OpenOCD 下载、PB5 红灯闪烁和 GDB 断点调试验证。FreeRTOS 调度器、Key Task → Queue → LED Task、USART1 TX DMA1 Channel 4、有界Serial TX Queue、USART1 RX DMA1 Channel 5循环接收、USART IDLE通知和原始字节回显均已完成构建与真实硬件验证。200字节加100字节的分批输入曾验证128字节发送分块和RX缓冲区回绕；随后加入的Console已通过行缓冲、CR/LF/CRLF、退格、`help`/`version`/`task`/`heap`、未知命令、空行、同批多命令及63/64字符边界恢复验收。TIM6 10 kHz运行时间计数、任务状态/栈/CPU表和24 KiB FreeRTOS Heap诊断也已形成闭环。ADC1已完成PC1/ADC1_IN11板载电位器和ADC1_IN16内部温度传感器的顺序采样：单个ADC Task每1 s软件触发并轮询EOC，再直接调用`AppSerial_Write()`复用现有Serial TX Queue，没有增加ADC Queue或额外处理Task。当前先完成P1 bxCAN所需的电气、位时序和测试帧准备，不提前加入W5500、MQTT、FTP或Bootloader。Codex只提供讲解、只读检查并维护Markdown，不直接修改固件代码。
 
 ## 目录
 
@@ -32,6 +32,7 @@ FreeRTOS 的原理、术语、源码关系、自测题和逐步移植学习记�
 | 串口基础 | USART1 PA9/PA10 + 板载CH340G；TX使用DMA1 Channel 4，RX使用DMA1 Channel 5 | TX普通DMA、RX循环DMA、IDLE通知、CNDTR位置计算和回绕均已实机验证 |
 | 串口Console | 固定有界行缓冲；CR/LF/CRLF与退格处理；`help`、`version`、`task`、`heap`只读命令 | 命令分发、行边界恢复和诊断输出均已实机验证 |
 | 运行诊断 | `vTaskListTasks()`、`vTaskGetRunTimeStatistics()`、TIM6 10 kHz计数和`heap_4`余量查询 | 状态、优先级、栈高水位、CPU累计占用及Heap当前/历史余量已验证 |
+| ADC采样 | ADC1；PC1/ADC1_IN11板载电位器和ADC1_IN16内部温度传感器；软件触发单次转换、Task轮询EOC | 单个ADC Task每1 s顺序采样两通道，并通过`AppSerial_Write()`复用现有Serial TX Queue；已完成构建与实机验证 |
 | 交叉编译器 | GNU Tools for STM32 14.3.1，`arm-none-eabi-gcc` | 已验证 |
 | 构建配置 | CMake 4.3.1 | 已验证 |
 | 构建执行 | GNU Make 4.4.1 | 已验证 |
@@ -84,6 +85,7 @@ firmware/
 │   ├── rtos/                          应用与FreeRTOS内核之间的集成层
 │   │   └── freertos_hooks.c           Malloc/栈溢出Hook，已由用户创建并通过语法检查
 │   ├── app/                           应用Task和业务编排，按功能域继续分子目录
+│   │   ├── adc/                       ADC周期采样Task和串口报告编排
 │   │   ├── console/                   有界行缓冲、行结束处理和只读命令分发
 │   │   ├── diagnostics/               FreeRTOS任务、运行时间和Heap诊断报告
 │   │   ├── event/                     Key Task与LED Task共享的按键事件契约
@@ -91,6 +93,7 @@ firmware/
 │   │   ├── led/                       阻塞接收Queue事件并控制RGB LED
 │   │   └── serial/                    USART1 TX/RX Task、TX Queue、DMA与IDLE通知桥接
 │   └── bsp/                           板级支持层，按外设或器件继续分子目录
+│       ├── adc/                       ADC1、PC1模拟输入、内部温度通道、校准和轮询转换
 │       ├── key/                       PA0、PC13按键非阻塞读取BSP
 │       ├── led/                       霸道 V2 RGB LED BSP：bsp_led.c/.h
 │       ├── timer/                     TIM6运行时间统计计数器和回绕扩展
@@ -98,7 +101,7 @@ firmware/
 └── build/                             构建输出，不纳入 Git
 ```
 
-当前 CMake 目标已经编译 `tasks.c`、`list.c`、`queue.c`、GNU Cortex-M3 `port.c`、`heap_4.c`、应用Hook，以及 FWlib 的 USART、DMA、TIM和DBGMCU驱动。应用侧已经形成三个独立同步闭环：Key Task通过 `AppKeyEvent_t` Queue向LED Task传递稳定按下事件；Serial TX Task独占USART1发送通道，使用DMA1 Channel 4发送并等待完成通知；Serial RX Task等待USART IDLE通知，根据DMA1 Channel 5的CNDTR和软件读位置处理新增字节，再逐字节调用纯应用模块 `AppConsole_ProcessByte()`。Console只报告命令类型，诊断模块在Task上下文生成任务或Heap报告，最终仍由 `AppSerial_Write()`复制提交到私有TX Queue。Console不创建新Task或Queue，也不访问BSP、ISR或FreeRTOS API。`configUSE_TASK_NOTIFICATIONS`、Trace、统计格式化和运行时间统计已启用；FreeRTOS Software Timer、Event Group、Stream Buffer、外部按键中断和ADC尚未加入构建。
+当前 CMake 目标已经编译 `tasks.c`、`list.c`、`queue.c`、GNU Cortex-M3 `port.c`、`heap_4.c`、应用Hook，以及 FWlib 的 USART、DMA、TIM、DBGMCU和ADC驱动。应用侧已经形成多个职责清晰的闭环：Key Task通过 `AppKeyEvent_t` Queue向LED Task传递稳定按下事件；Serial TX Task独占USART1发送通道，使用DMA1 Channel 4发送并等待完成通知；Serial RX Task等待USART IDLE通知，根据DMA1 Channel 5的CNDTR和软件读位置处理新增字节，再逐字节调用纯应用模块 `AppConsole_ProcessByte()`。Console只报告命令类型，诊断模块在Task上下文生成任务或Heap报告，最终仍由 `AppSerial_Write()`复制提交到私有TX Queue。ADC Task独占ADC1，每1 s依次读取PC1/ADC1_IN11和ADC1_IN16原始值，再通过同一串口接口复制提交报告；两个通道属于ADC1顺序转换，不是ADC1/ADC2双ADC模式。本阶段没有增加ADC Queue、ADC处理Task、ADC中断或DMA。`configUSE_TASK_NOTIFICATIONS`、Trace、统计格式化和运行时间统计已启用；FreeRTOS Software Timer、Event Group、Stream Buffer和外部按键中断仍未加入构建。
 
 新增固件代码按职责落位，不能仅为省事堆在 `User/` 根目录：`Libraries/` 保存第三方内核和厂商库；`User/rtos/` 保存FreeRTOS应用侧Hook与适配；`User/app/<功能域>/` 保存Task入口和业务编排；`User/bsp/<外设或器件>/` 保存板级驱动。`main.c` 和全工程配置头可保留为根级入口，但不得逐步演变成业务实现集合。依赖方向应保持为：`main` 只调用必要的BSP初始化、应用模块注册和调度器启动，`app → bsp + FreeRTOS API`，`bsp → FWlib/CMSIS/硬件`；底层不得反向依赖应用层。
 
@@ -377,6 +380,20 @@ RAM静态占用：28512 B / 64 KiB，约43.51%
 
 ELF中已经保留 `AppRtosDiagnostics_BuildTaskList()`、`AppRtosDiagnostics_BuildHeapReport()`、`vTaskListTasks()`、`vTaskGetRunTimeStatistics()`、`BspRunTimeCounter_Init()`、`BspRunTimeCounter_GetValue()`和 `TIM6_IRQHandler`。TIM6以10 kHz计数，每个计数代表100 us；16位硬件计数器回绕由32位软件高位扩展，形成以 `uint64_t`返回的48位有效累计计数。TIM6中断使用逻辑优先级4且不调用FreeRTOS API，调试暂停时由DBGMCU冻结。
 
+### ADC周期采样闭环构建结果
+
+加入FWlib ADC驱动、`User/bsp/adc/`和`User/app/adc/`并创建ADC Task后，当前Debug ELF静态尺寸为：
+
+```text
+text：18400 B
+data：88 B
+bss：28432 B
+Flash装载量：18488 B / 512 KiB，约3.53%
+RAM静态占用：28520 B / 64 KiB，约43.52%
+```
+
+ELF中已经保留 `ADC_Init()`、`ADC_GetFlagStatus()`、`BspAdc_Init()`、`BspAdc_ReadRaw()`、`AppAdcTask_Create()`和私有任务入口 `prvAdcTask()`。ADC时钟由PCLK2六分频得到12 MHz；ADC1采用独立模式、单次转换和软件触发，PC1/ADC1_IN11使用55.5周期采样时间，内部温度通道ADC1_IN16使用239.5周期采样时间。ADC Task轮询EOC且带有有界超时，本阶段没有启用ADC中断或DMA。
+
 ## 下载与实机验收
 
 裸机 LED 基线已经由用户在真实硬件上完成以下验收：
@@ -421,6 +438,17 @@ openocd -f interface/cmsis-dap.cfg -c "transport select swd" -f target/stm32f1x.
 
 有界Serial TX Queue已经通过两条启动消息的FIFO实机验证；RX循环DMA、IDLE通知、早期128字节发送分块和缓冲区回绕也已通过真实硬件验收。当前Console行协议、只读命令分发、任务/栈/CPU诊断和Heap诊断均已完成。参数解析、命令历史和更完整的交互编辑仍未实现。逐次断点、临时连接故障和工具输出不写入学习文档。
 
+### ADC周期采样实机验收
+
+用户已在真实硬件上确认：
+
+- ADC1能够依次读取PC1/ADC1_IN11板载电位器和ADC1_IN16内部温度传感器的12位原始值。
+- 转动板载电位器时，电位器原始值能够随旋钮位置变化；内部温度通道能够持续返回稳定有效的原始值。
+- ADC Task每1 s完成一次两通道采样和串口报告，连续输出正常。
+- ADC Task直接调用`AppSerial_Write()`，由现有Serial TX Queue和Serial TX Task完成复制、排队与DMA发送；ADC模块没有新增Queue或第二个Task。
+- ADC Task大部分时间阻塞在周期延时中；任务状态、CPU、栈余量和24 KiB FreeRTOS Heap验收通过，未观察到持续内存下降、乱码或异常复位。
+- 本阶段只验收原始值，不把内部温度传感器典型参数换算结果宣称为精确摄氏温度。
+
 ## 固件技术路线
 
 ```text
@@ -440,7 +468,9 @@ P0  最小Console行协议与命令分发（已完成实机验证）
  ↓
 P0  Task状态/栈/CPU与Heap诊断（已完成实机验证）
  ↓
-P0  双路ADC Queue、Binary Semaphore和真实共享资源同步实验（下一步）
+P0  ADC1双通道软件触发采样 → Task轮询EOC → Serial TX Queue（已完成实机验证）
+ ↓
+P0  CAN供电、终端电阻、位时序和测试帧确认（下一步）
  ↓
 P1  bxCAN + Windows CAN分析仪最小双向闭环
  ↓
@@ -451,7 +481,7 @@ P3  FTP流式下载 + W25Q64暂存 + MD5校验
 P4  Bootloader + 内部Flash更新 + 断电恢复
 ```
 
-串口TX/RX硬件通路、Console和FreeRTOS运行诊断已经分别完成验证。Console没有改变DMA、IDLE ISR和TX所有权，只在Serial RX Task上下文中增加有界行协议和只读诊断命令；任务快照、文本格式化和Heap查询由独立诊断模块承担。固化本阶段Git基线后，下一阶段再单独进入双路ADC Queue、Binary Semaphore和真实共享资源同步实验，不把CAN或网络功能提前混入。
+串口TX/RX硬件通路、Console、FreeRTOS运行诊断和ADC1低频双通道采样已经分别完成验证。ADC阶段采用单个ADC Task顺序读取两个ADC1通道，并直接复用现有Serial TX Queue，没有为1 Hz采样增加ADC Queue或额外处理Task。Binary Semaphore与Mutex因当前不存在需要它们解决的真实事件同步或共享资源问题而延期；当前先完成P1 bxCAN的电气、位时序和测试帧准备，再进入CAN实现，不把网络功能提前混入。
 
 ## FreeRTOS V11.3.0 学习型移植记录
 
@@ -499,6 +529,7 @@ PB5 红灯约每 2000 ms 翻转一次
 | 12. USART1 RX循环DMA同步 | 学习CNDTR、软件读位置、回绕、IDLE清除和ISR到Task通知 | 原始字节回显、128字节分块及200+100字节回绕均已实机验证 |
 | 13. 最小Console行协议 | 学习有界行缓冲、CR/LF/CRLF、退格、超长恢复和只读命令分发 | `help`、`version`、错误响应及63/64字符边界均已完成构建与实机验收 |
 | 14. FreeRTOS运行与Heap诊断 | 学习任务状态、栈高水位、运行时间统计及Heap当前/历史余量 | `task`、`heap`、TIM6回绕和重复查询稳定性均已完成构建与实机验收 |
+| 15. ADC1双通道周期采样 | 学习ADC时钟、采样时间、软件触发、EOC轮询和单一外设所有权 | PC1/ADC1_IN11电位器与ADC1_IN16内部温度通道已通过构建和实机验证；单ADC Task直接复用现有Serial TX Queue |
 
 每完成一步，都应把实际命令、结果、遇到的问题和验证结论补充到本节，不能提前把计划写成已完成结果。
 
@@ -521,14 +552,14 @@ USART1 RX循环DMA与IDLE中断（已完成实机验证）
     ↓
 Task状态、栈、CPU与Heap诊断（已完成实机验证）
     ↓
-双路ADC数据通过Queue发送到Serial TX Task（下一步）
+ADC1双通道软件触发、Task轮询EOC和周期串口报告（已完成实机验证）
     ↓
-Binary Semaphore完成EXTI到Task同步
+CAN供电、终端电阻、位时序和P1测试帧确认（下一步）
     ↓
-Mutex保护真实共享资源
+P1 bxCAN + Windows CAN分析仪最小双向闭环
 ```
 
-历史 `User/Key/`阻塞扫描示例已由分层后的 `User/bsp/key/`和 `User/app/key/`替代，历史EXTI与串口示例不直接加入当前CMake。`User/bsp/usart/`、`User/app/serial/`、`User/app/console/`、`User/app/diagnostics/`和 `User/bsp/timer/`已经建立；TX方向保持Serial TX Task为唯一所有者，RX方向由循环DMA、USART IDLE通知和Serial RX Task协作，新增字节由纯Console状态机解析，响应通过私有有界TX Queue复制提交。BSP与ISR职责没有因命令解析或诊断功能而扩大。EXTI后续仍需使用统一NVIC分组，并满足FreeRTOS `FromISR`优先级边界。具体原理和阶段验收见 [FreeRTOS学习.md](FreeRTOS学习.md#25-第二阶段按键queuesemaphore-与-mutex)、[USART1 TX DMA 与 Task Notification](FreeRTOS学习.md#26-usart1-tx-dma-与-task-notification)、[USART1 RX循环DMA、IDLE与Task Notification](FreeRTOS学习.md#27-usart1-rx循环dmaidle与task-notification)、[最小Console行协议与Serial RX Task接入](FreeRTOS学习.md#28-最小console行协议与serial-rx-task接入)和 [FreeRTOS任务运行时间与Heap诊断](FreeRTOS学习.md#29-freertos任务运行时间与heap诊断)。
+历史 `User/Key/`阻塞扫描示例已由分层后的 `User/bsp/key/`和 `User/app/key/`替代，历史EXTI与串口示例不直接加入当前CMake。`User/bsp/usart/`、`User/app/serial/`、`User/app/console/`、`User/app/diagnostics/`、`User/bsp/timer/`、`User/bsp/adc/`和 `User/app/adc/`已经建立；TX方向保持Serial TX Task为唯一所有者，RX方向由循环DMA、USART IDLE通知和Serial RX Task协作。ADC1由单个ADC Task独占，低频原始值报告直接复用私有Serial TX Queue。Binary Semaphore和Mutex保留为知识储备，等出现真实事件同步或共享资源后再启用。具体原理和阶段验收见 [FreeRTOS学习.md](FreeRTOS学习.md#25-第二阶段按键queuesemaphore-与-mutex)、[USART1 TX DMA 与 Task Notification](FreeRTOS学习.md#26-usart1-tx-dma-与-task-notification)、[USART1 RX循环DMA、IDLE与Task Notification](FreeRTOS学习.md#27-usart1-rx循环dmaidle与task-notification)、[最小Console行协议与Serial RX Task接入](FreeRTOS学习.md#28-最小console行协议与serial-rx-task接入)、[FreeRTOS任务运行时间与Heap诊断](FreeRTOS学习.md#29-freertos任务运行时间与heap诊断)和 [ADC1双通道低频采样与串口发送复用](FreeRTOS学习.md#30-adc1双通道低频采样与串口发送复用)。
 
 ### 3. 官方源码下载和版本核验
 
@@ -859,6 +890,8 @@ FreeRTOS 提供多种动态内存实现，应用一次只能选择一种：
 - 当前RX只依赖IDLE和CNDTR，未启用DMA1 Channel 5半传输/传输完成中断；不宣称支持无IDLE的持续数据流或单次连续满256字节，DMA追满一圈可能覆盖未处理数据并造成读写位置相等。
 - Serial RX Task当前分配512 words，实测Stack High Water Mark剩余348 words；Serial TX Task分配256 words，实测剩余96 words。当前保持测量后的安全余量，不仅凭“未触发栈溢出Hook”缩减栈。
 - Serial TX Queue长度为4，单条消息上限为512字节；当前 `heap_4`总量为24 KiB。外部RAM尚未接入链接脚本或FreeRTOS Heap。
+- ADC1双通道周期采样已经完成构建与实机验证：PC1/ADC1_IN11读取板载电位器，ADC1_IN16读取内部温度传感器；单个ADC Task使用软件触发和EOC轮询，并直接复用现有Serial TX Queue。
+- 当前ADC只输出12位原始值，未启用扫描连续转换、ADC中断、DMA或摄氏温度校准；`BspAdc_ReadRaw()`不支持并发调用，由ADC Task独占ADC1。
 - 尚未实现 CAN、W5500、TCP、MQTT、FTP、W25Q64 和 Bootloader。
 - 不在固件源码或 README 中保存真实 MQTT/FTP 用户名、密码、证书私钥或设备唯一凭据。
 - `build/` 中的 ELF、HEX、BIN、MAP 和中间文件不提交 Git。

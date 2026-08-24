@@ -8,7 +8,9 @@
 #include "app_key_event.h"
 #include "bsp_usart.h"
 #include "app_serial_task.h"
+#include "bsp_adc.h"
 
+#include "app_adc_task.h"
 #include "queue.h"
 /*
  * 队列最多缓存4个尚未处理的按键事件。
@@ -16,15 +18,6 @@
  */
 #define APP_KEY_EVENT_QUEUE_LENGTH 4U
 
-/*
- * 当前使用两条启动消息验证Queue的FIFO顺序。
- * AppSerial_Write()会复制数据，所以原缓冲区不直接交给DMA。
- */
-static const uint8_t s_ucSerialMessage1[] =
-    "\r\nSerial TX Queue message 1.\r\n";
-
-static const uint8_t s_ucSerialMessage2[] =
-    "Serial TX Queue message 2.\r\n";
 int main(void)
 {
     BaseType_t xTaskCreateResult;
@@ -33,7 +26,15 @@ int main(void)
     LED_GPIO_Config();
     BspKey_Init();
     BspUsart1_Init();
-
+    if (BspAdc_Init() == false)
+    {
+        /*
+        * ADC校准失败时不启动调度器，保留故障现场。
+        */
+        for (;;)
+        {
+        }
+    }
     /*
     * Queue中的每一个项目都是一个AppKeyEvent_t。
     * FreeRTOS会为Queue控制结构和4个事件的存储空间分配内存。
@@ -113,23 +114,7 @@ uxItemSize
         {
         }
     }
-    /*
-    * Queue已经创建，但调度器尚未启动。
-    * 使用非阻塞发送可以先把启动消息放入Queue，
-    * 调度器启动后Serial TX Task会按FIFO顺序取出。
-    */
-    if (AppSerial_Write(
-            s_ucSerialMessage1,
-            (uint16_t)(sizeof(s_ucSerialMessage1) - 1U)) == false)
-    {
-        for (;;)
-        {
-        }
-    }
-
-    if (AppSerial_Write(
-            s_ucSerialMessage2,
-            (uint16_t)(sizeof(s_ucSerialMessage2) - 1U)) == false)
+    if (AppAdcTask_Create() == false)
     {
         for (;;)
         {

@@ -35,6 +35,7 @@
 - [27. USART1 RX循环DMA、IDLE与Task Notification](#27-usart1-rx循环dmaidle与task-notification)
 - [28. 最小Console行协议与Serial RX Task接入](#28-最小console行协议与serial-rx-task接入)
 - [29. FreeRTOS任务、运行时间与Heap诊断](#29-freertos任务运行时间与heap诊断)
+- [30. ADC1双通道低频采样与串口发送复用](#30-adc1双通道低频采样与串口发送复用)
 
 ## 1. 学习目标与边界
 
@@ -1489,6 +1490,7 @@ STM32F103ZET6 的 64 KiB SRAM 还需要容纳：
 | 11 | 建立USART1 RX循环DMA闭环 | Channel 5循环接收、IDLE通知、CNDTR位置计算、原始字节回显和缓冲区回绕已完成构建与真实硬件验证 |
 | 12 | 建立最小Console行协议 | 有界行缓冲、CR/LF/CRLF、退格、超长整行丢弃、只读命令分发和边界恢复已完成构建与真实硬件验证 |
 | 13 | 建立任务、运行时间和Heap诊断 | Trace/Stats、TIM6 10 kHz、`task`/`heap`以及栈、CPU、Heap实机验证已完成 |
+| 14 | 建立ADC1双通道低频采样闭环 | PC1/ADC1_IN11电位器与ADC1_IN16内部温度通道已由单个ADC Task顺序采样，并通过现有Serial TX Queue完成实机报告 |
 
 ## 16. 当前应掌握的核心结论
 
@@ -7642,6 +7644,8 @@ SysTick向量：0x08000DE5 → 函数符号0x08000DE4
 阶段D：两个Task通过Mutex保护一个真实共享资源
 ```
 
+阶段A和阶段B已经完成。阶段C和阶段D是通信对象的知识储备，不是必须紧接着完成的功能清单；当前没有需要Binary Semaphore表达的EXTI事件，也没有需要Mutex保护的真实共享资源，因此二者延期。后续应在真实需求出现时再启用，而不是为了覆盖API强行增加Task或同步对象。
+
 ### 25.2 当前历史按键代码的审查结论
 
 工程中已有尚未加入当前CMake目标的历史示例：
@@ -7849,7 +7853,7 @@ Mutex               增加持有者和优先级继承语义
 | Binary Semaphore | EXTI ISR优先级合法；ISR只Give，Task负责消抖和处理；无中断风暴 |
 | Mutex | 只在Task上下文使用；持有范围短；所有成功Take路径最终都Give；共享资源无交叉输出 |
 
-每个阶段通过后再进入下一阶段，不用一次开启Queue、Semaphore、Mutex和EXTI。
+表中标准用于相应机制真正进入工程时验收。当前Binary Semaphore和Mutex实验已延期，不阻塞ADC闭环或后续CAN准备；CAN帧包含ID、DLC和数据字节，接收方向更适合使用能够携带数据的有界Queue。
 
 ## 26. USART1 TX DMA 与 Task Notification
 
@@ -8438,7 +8442,7 @@ ELF中 `AppConsole_Init()`、`AppConsole_ProcessByte()`、`AppSerialRxTask_Creat
 
 ### 28.8 下一边界
 
-最小Console闭环完成后，任务运行统计、栈高水位和Heap诊断作为第29章的独立功能完成；更复杂的命令参数仍不在当前范围。诊断阶段固化Git基线后，再按工程路线进入双路ADC Queue、Binary Semaphore和真实共享资源同步实验；本章不提前引入CAN、W5500、MQTT、FTP或OTA。
+最小Console闭环完成后，任务运行统计、栈高水位和Heap诊断作为第29章的独立功能完成；更复杂的命令参数仍不在当前范围。随后完成的ADC1低频双通道采样记录在第30章：它采用单ADC Task直接复用现有Serial TX Queue，没有增加ADC原始数据Queue、Binary Semaphore或Mutex。
 
 ## 29. FreeRTOS任务、运行时间与Heap诊断
 
@@ -8480,7 +8484,7 @@ configGENERATE_RUN_TIME_STATS = 1
 
 `task`命令依次调用两个官方格式化接口：第一张表显示任务状态、优先级、栈高水位和任务编号，第二张表显示累计运行计数和CPU百分比。两次调用取得的是相邻时刻的两个快照，不是严格同一瞬间；当前低频人工诊断允许这点微小时间差，避免为追求完全一致引入自定义快照和格式化复杂度。
 
-这两个便捷接口内部都会临时申请 `TaskStatus_t`数组。当前有5个任务，`sizeof(TaskStatus_t)=40`字节，因此单次正文快照需要200字节，再加 `heap_4`块管理开销；函数结束后会释放。它们适合低频调试，不应放入硬实时周期路径。
+这两个便捷接口内部都会临时申请 `TaskStatus_t`数组。加入ADC Task后当前有6个任务，`sizeof(TaskStatus_t)=40`字节，因此单次正文快照需要240字节，再加 `heap_4`块管理开销；函数结束后会释放。它们适合低频调试，不应放入硬实时周期路径。
 
 ### 29.3 TIM6的10 kHz运行时间计数
 
@@ -8508,11 +8512,11 @@ FreeRTOS在启动调度器时通过 `portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()`�
 | --- | --- | --- |
 | `X` | Running | 生成报告时的Serial RX Task |
 | `R` | Ready | 等待CPU的Idle Task |
-| `B` | Blocked | 等待Queue、通知或延时到期的LED、Key、Serial TX Task |
+| `B` | Blocked | 等待Queue、通知或延时到期的LED、Key、Serial TX和ADC Task |
 | `S` | Suspended | 被显式挂起或使用真正无限等待语义的任务 |
 | `D` | Deleted | 已删除但资源尚待Idle Task回收的任务 |
 
-`StackFree`是任务启动以来从未使用过的最小栈空间，单位为 `StackType_t`个数，不是字节。当前Cortex-M3的 `StackType_t`为4字节。实测结果为：Serial RX 348、Idle 118、Key 104、LED 96、Serial TX 96 words。它们均大于0；其中Serial RX配置为512 words，Serial TX配置为256 words。栈高水位用于证明余量，不能只看“没有触发栈溢出Hook”。
+`StackFree`是任务启动以来从未使用过的最小栈空间，单位为 `StackType_t`个数，不是字节。当前Cortex-M3的 `StackType_t`为4字节。ADC加入前的诊断阶段快照为：Serial RX 348、Idle 118、Key 104、LED 96、Serial TX 96 words。加入ADC后共有6个任务；ADC Task初始分配256 words，并在真实硬件验收中确认栈余量满足本阶段需求，但没有在文档中虚构未记录的具体数值。栈高水位用于证明余量，不能只看“没有触发栈溢出Hook”。
 
 ### 29.5 `RunCount`与CPU百分比
 
@@ -8534,13 +8538,13 @@ FreeRTOS在启动调度器时通过 `portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()`�
 
 `Free`不等于“最大一次可分配块”，也不能单独证明没有碎片；`MinEverFree`是历史低水位，临时分配释放后不会自动升高。执行 `task`时临时申请任务快照数组，结束后 `Free`应恢复，而 `MinEverFree`可能下降一次。重复执行 `task`和 `heap`后，`Free`保持稳定才说明没有持续泄漏。
 
-初始8 KiB Heap在现有任务、512字节×4的TX Queue和任务栈创建完成后只剩768字节，不足以继续增加ADC Task与Queue。当前把Heap调整为24 KiB；它仍位于STM32内部64 KiB SRAM中，已经整体计入ELF的 `bss`，与链接脚本的C Heap、MSP和板载外部RAM都不是同一个区域。外部RAM尚未接入链接脚本或FreeRTOS分配器。
+初始8 KiB Heap在原有任务、512字节×4的TX Queue和任务栈创建完成后只剩768字节，不足以安全扩展ADC Task。当前把Heap调整为24 KiB；它仍位于STM32内部64 KiB SRAM中，已经整体计入ELF的 `bss`，与链接脚本的C Heap、MSP和板载外部RAM都不是同一个区域。最终ADC方案没有增加ADC原始数据Queue，外部RAM也尚未接入链接脚本或FreeRTOS分配器。
 
 ### 29.7 缓冲区、构建与实机结论
 
 任务报告使用512字节静态缓冲区，Heap报告使用128字节静态缓冲区；只有Serial RX Task触发生成，随后 `AppSerial_Write()`立即复制到TX Queue。静态报告缓冲区不从FreeRTOS Heap反复分配，也不会在DMA发送期间被诊断模块直接复用。
 
-最终Debug构建结果：
+ADC加入前的诊断阶段Debug构建结果：
 
 ```text
 text：17408 B
@@ -8550,4 +8554,141 @@ Flash：17496 B / 512 KiB，3.34%
 RAM：28512 B / 64 KiB，43.51%
 ```
 
-真实硬件已经确认：两个任务表头和Heap表头完整；任务状态、优先级、栈余量和任务编号合理；TIM6跨多次6.5536 s回绕后计数连续；空闲系统Idle占用符合预期；重复执行任务和Heap诊断后当前空闲量稳定。当前诊断闭环完成后，下一阶段进入双路ADC Queue实验，不提前引入CAN、W5500、MQTT、FTP或OTA。
+真实硬件已经确认：两个任务表头和Heap表头完整；任务状态、优先级、栈余量和任务编号合理；TIM6跨多次6.5536 s回绕后计数连续；空闲系统Idle占用符合预期；重复执行任务和Heap诊断后当前空闲量稳定。诊断闭环完成后，ADC阶段继续复用这些接口验收新增Task和Heap余量，具体设计与结论见第30章。
+
+## 30. ADC1双通道低频采样与串口发送复用
+
+### 30.1 目标、分层与数据流
+
+本阶段建立的最小闭环为：
+
+```text
+ADC Task：每隔约1 s开始一次采样
+    ↓
+BspAdc_ReadRaw()
+    ├─ PC1 / ADC1_IN11：板载电位器
+    └─ ADC1_IN16：内部温度传感器
+    ↓
+ADC Task：生成有界文本报告
+    ↓
+AppSerial_Write()复制数据
+    ↓
+私有Serial TX Queue
+    ↓
+Serial TX Task → DMA1 Channel 4 → USART1
+```
+
+`User/bsp/adc/`只负责ADC1、GPIO、通道选择、校准、转换和硬件超时，不依赖FreeRTOS或应用层。`User/app/adc/`负责采样周期、失败计数和报告策略，不直接访问ADC、USART或DMA寄存器。
+
+ADC1只有ADC Task一个所有者，Serial TX Task继续独占USART1发送DMA。两个硬件资源的所有权都保持单一、明确。
+
+### 30.2 软件触发单次转换
+
+ADC1使用独立模式，关闭扫描和连续转换。每次先把一个通道配置为规则组Rank 1，再由软件启动一次转换。电位器和内部温度传感器不是同时转换，也不是ADC1与ADC2双ADC模式，而是由ADC1依次完成两次单通道转换。
+
+当前PCLK2为72 MHz，ADC时钟使用六分频得到12 MHz：
+
+```text
+电位器：55.5采样周期 + 12.5转换周期 ≈ 5.67 us
+内部温度：239.5采样周期 + 12.5转换周期 = 21 us
+两路转换合计约26.7 us
+```
+
+内部温度传感器使用更长采样时间，是为了给内部高阻信号源足够的采样建立时间。当前只输出12位原始值，不直接换算摄氏度；内部温度传感器的典型参数、芯片个体差异和校准误差需要单独处理，原始值更适合先验证采样链路。
+
+`BspAdc_ReadRaw()`先把两路结果保存到局部变量，只有两次转换都成功才更新调用者提供的输出对象，避免失败时返回一半新数据、一半旧数据。
+
+### 30.3 Task轮询EOC、超时和任务状态
+
+EOC是End Of Conversion，表示本次ADC转换完成。当前转换流程为：
+
+```text
+清除旧EOC
+    ↓
+软件启动一次转换
+    ↓
+Task循环读取EOC标志
+    ↓
+EOC置位后读取ADC_DR
+```
+
+轮询EOC期间ADC Task仍处于Running状态，不会像等待Queue或调用`vTaskDelay()`那样进入Blocked。但两路转换只占约27 us，而且每秒只执行一次，因此当前忙等时间很短，适合本阶段的低频状态监测。
+
+`BSP_ADC_TIMEOUT_COUNT`是轮询次数上限，不是毫秒值。它受CPU频率、编译优化和函数调用开销影响，只用于防止ADC或校准硬件异常时永久卡死，不能当作精确时间基准。初始化校准超时会阻止调度器启动；运行中的转换超时则使本次读取失败，由ADC Task记录失败计数后等待下一周期。
+
+ADC Task的典型状态时间线为：
+
+```text
+Running：调用vTaskDelay(1000 ms)
+    ↓
+Blocked：等待周期到期，不占用CPU
+    ↓ 延时到期
+Ready
+    ↓ 被调度
+Running：完成两路转换、文本格式化和Queue提交
+    ↓
+再次调用vTaskDelay()
+Blocked
+```
+
+因此`task`命令中ADC通常显示为`B`，偶尔可能在尚未获得CPU时显示`R`。当前使用相对延时，所以实际相邻报告间隔约为“一秒延时加本次处理时间”；对于低频监测足够。如果未来要求严格固定采样相位，可以评估`vTaskDelayUntil()`；若要求持续高速采样，则应重新评估定时器触发、ADC扫描和DMA。
+
+### 30.4 为什么当前不使用ADC中断或DMA
+
+ADC中断适合转换期间Task还要执行其他工作，或由不规律事件触发单次采样的场景；定时器触发加DMA更适合固定频率、连续多通道采样和批量处理。
+
+当前需求只有每秒两次顺序转换，全部转换时间约27 us。为此增加ADC ISR、`FromISR`同步、DMA缓冲区及其回绕管理，获得的收益很小，却会引入更多状态和所有权。因此本阶段保留软件触发和Task轮询EOC，只有在采样率和实时性需求发生变化时再升级方案。
+
+### 30.5 为什么没有ADC Queue和第二个Task
+
+当前数据只有一个生产者和一种直接处理策略：
+
+```text
+ADC Task读取原始值
+    ↓
+ADC Task生成低频报告
+```
+
+没有另一个需要独立调度的原始数据消费者。现有`AppSerial_Write()`之后已经有私有Serial TX Queue，它把“生成报告”和“等待DMA发送”解耦。此时再增加ADC原始值Queue和ADC Process Task，会重复增加一次中转，同时增加Task栈、Queue内存和失败路径，却没有解决新的并发问题。
+
+只有出现下列需求时，才应重新考虑ADC数据Queue或第二个处理Task：
+
+- 采样频率明显高于处理或上报频率。
+- 必须暂存并保留每一个样本。
+- 滤波、控制和记录需要不同优先级或周期。
+- 多个模块需要消费同一批采样数据。
+- ADC采样时序不能被文本格式化影响。
+
+同理，当前没有ADC ISR，所以不需要Binary Semaphore；ADC1只有一个Task访问，也没有需要Mutex保护的并发共享资源。
+
+### 30.6 串口发送所有权与背压
+
+ADC Task使用96字节局部缓冲区生成不含浮点数的固定格式报告。`AppSerial_Write()`在返回前把内容复制进有界Serial TX Queue，因此函数返回后ADC Task可以安全复用自己的局部缓冲区，DMA不会继续引用ADC Task栈上的数据。
+
+ADC Task不等待DMA完成，也不直接修改USART或DMA状态。Serial TX Task仍是唯一发送所有者，因此ADC周期报告、Console响应和其他消息不会由多个Task同时操作硬件。
+
+当TX Queue已满时，`AppSerial_Write()`立即返回`false`。ADC Task累计报告丢弃计数并进入下一周期，不让串口输出反向阻塞ADC采样。这个策略适合允许丢失个别状态报告的低频监测；若未来数据具有不可丢失语义，需要重新定义缓存容量、超时和背压策略。
+
+### 30.7 构建与真实硬件验收结论
+
+最终Debug构建结果：
+
+```text
+text：18400 B
+data：88 B
+bss：28432 B
+Flash：18488 B / 512 KiB，约3.53%
+RAM：28520 B / 64 KiB，约43.52%
+```
+
+ELF中已经保留`BspAdc_Init()`、`BspAdc_ReadRaw()`、`AppAdcTask_Create()`和ADC Task入口。真实硬件已经确认：
+
+- ADC1能够周期读取PC1/ADC1_IN11板载电位器和ADC1_IN16内部温度传感器。
+- 电位器原始值随旋钮位置明显变化，并保持在12位ADC范围内。
+- 内部温度原始值能够稳定输出；本阶段没有把未经校准的原始值宣称为精确摄氏温度。
+- 串口约每秒输出一条完整报告，Console和原有串口功能仍可正常使用。
+- ADC Task大部分时间处于Blocked，CPU占用符合低频短时采样预期。
+- Task栈和FreeRTOS Heap验收通过，连续运行未出现持续内存下降、乱码或异常复位。
+- ADC读取失败计数和报告丢弃计数提供了明确的失败可观察入口。
+
+这证明软件触发、EOC轮询、周期Task、现有Serial TX Queue和DMA发送已经形成最小ADC闭环。Binary Semaphore和Mutex因当前没有真实使用场景而暂缓。下一步先确认CAN供电、终端电阻、位时序和P1测试帧，再进入bxCAN实现；CAN接收帧包含ID、DLC和数据字节，接收方向应优先评估能够携带完整数据的有界Queue，而不是Binary Semaphore。
