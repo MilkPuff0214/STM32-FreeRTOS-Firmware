@@ -8691,4 +8691,6 @@ ELF中已经保留`BspAdc_Init()`、`BspAdc_ReadRaw()`、`AppAdcTask_Create()`�
 - Task栈和FreeRTOS Heap验收通过，连续运行未出现持续内存下降、乱码或异常复位。
 - ADC读取失败计数和报告丢弃计数提供了明确的失败可观察入口。
 
-这证明软件触发、EOC轮询、周期Task、现有Serial TX Queue和DMA发送已经形成最小ADC闭环。Binary Semaphore和Mutex因当前没有真实使用场景而暂缓。下一步先确认CAN供电、终端电阻、位时序和P1测试帧，再进入bxCAN实现；CAN接收帧包含ID、DLC和数据字节，接收方向应优先评估能够携带完整数据的有界Queue，而不是Binary Semaphore。
+这证明软件触发、EOC轮询、周期Task、现有Serial TX Queue和DMA发送已经形成最小ADC闭环。Binary Semaphore和Mutex因当前没有真实使用场景而暂缓。P1的CAN波特率已经确定为500 kbit/s，PCLK1=36 MHz时采用Prescaler=4、BS1=15 TQ、BS2=2 TQ和SJW=1 TQ；下一步继续确认CAN供电、终端电阻、Windows分析仪配置和P1测试帧评审，再进入bxCAN实现。
+
+进入CAN阶段后，ADC1仍由ADC Task独占。CAN Task不得为了发送遥测而再次直接调用`BspAdc_ReadRaw()`；ADC Task应把一组完整样本作为不可变快照，通过明确、非阻塞的数据所有权路径交给CAN侧。若需要保留每一组样本，可使用有界Queue复制传递；若周期遥测只关心最新状态，则可评审由单一写者发布、CAN Task读取的最新值快照及其一致性保护。无论采用哪种方式，CAN接收帧都包含ID、IDE、RTR、DLC和数据字节，接收方向应使用能够携带完整帧快照的有界Queue，而不是只能表达“发生过事件”的Binary Semaphore。

@@ -23,6 +23,7 @@ add_executable(firmware
     Libraries/FWlib/src/stm32f10x_tim.c
     Libraries/FWlib/src/stm32f10x_dbgmcu.c
     Libraries/FWlib/src/stm32f10x_adc.c
+    Libraries/FWlib/src/stm32f10x_can.c
 
     # FreeRTOS Kernel V11.3.0 minimal sources.
     Libraries/FreeRTOS-Kernel/tasks.c
@@ -42,6 +43,7 @@ add_executable(firmware
     User/app/console/app_console.c
     User/app/diagnostics/app_rtos_diagnostics.c
     User/app/adc/app_adc_task.c
+    User/app/can/app_can_task.c
 
     # Board support package.
     User/bsp/led/bsp_led.c
@@ -49,6 +51,8 @@ add_executable(firmware
     User/bsp/usart/bsp_usart.c
     User/bsp/timer/bsp_run_time_counter.c
     User/bsp/adc/bsp_adc.c
+    User/bsp/can/bsp_can.c
+    User/bsp/buzzer/bsp_buzzer.c
 
     User/main.c
 
@@ -82,6 +86,11 @@ target_include_directories(firmware PRIVATE
     
     User/bsp/timer
     User/bsp/adc
+
+    User/bsp/can
+    User/app/can
+
+    User/bsp/buzzer
 )
 
 target_compile_definitions(firmware PRIVATE

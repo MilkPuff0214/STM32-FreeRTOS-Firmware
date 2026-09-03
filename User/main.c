@@ -9,9 +9,13 @@
 #include "bsp_usart.h"
 #include "app_serial_task.h"
 #include "bsp_adc.h"
+#include "bsp_can.h"
 
 #include "app_adc_task.h"
 #include "queue.h"
+
+#include "app_can_task.h"
+#include "bsp_buzzer.h"
 /*
  * 队列最多缓存4个尚未处理的按键事件。
  * 这是队列项目数量，不是字节数量，也不是按键种类数量。
@@ -24,12 +28,23 @@ int main(void)
     QueueHandle_t xKeyEventQueue;
     /* 调度器启动前完成所有基础硬件初始化。 */
     LED_GPIO_Config();
+    BspBuzzer_Init();
     BspKey_Init();
     BspUsart1_Init();
     if (BspAdc_Init() == false)
     {
         /*
         * ADC校准失败时不启动调度器，保留故障现场。
+        */
+        for (;;)
+        {
+        }
+    }
+    if (BspCan_Init() == false)
+    {
+        /*
+        * CAN初始化握手失败时不启动调度器，
+        * 保留现场供GDB检查CAN_MSR和时钟配置。
         */
         for (;;)
         {
@@ -116,6 +131,17 @@ uxItemSize
     }
     if (AppAdcTask_Create() == false)
     {
+        for (;;)
+        {
+        }
+    }
+
+    if (AppCanTask_Create() == false)
+    {
+        /*
+        * 包括过滤器参数错误、任务重复创建和FreeRTOS Heap不足。
+        * 调度器尚未启动，因此停机保留故障现场。
+        */
         for (;;)
         {
         }

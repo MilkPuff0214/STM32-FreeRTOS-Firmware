@@ -104,6 +104,7 @@ LED Task的TCB和栈
 
 /* API inclusion configuration. */
 #define INCLUDE_vTaskDelay                       1   /* 编译vTaskDelay()，供Key Task周期扫描时阻塞等待。 */
+#define INCLUDE_xTaskDelayUntil                  1   /* 编译固定周期任务使用的xTaskDelayUntil()。 */
 #define INCLUDE_uxTaskGetStackHighWaterMark      1  /* 启用历史最小剩余任务栈查询，单位为words。 */
 #define INCLUDE_uxTaskGetStackHighWaterMark2     0  /* 不重复启用返回configSTACK_DEPTH_TYPE的第二套API。 */
 

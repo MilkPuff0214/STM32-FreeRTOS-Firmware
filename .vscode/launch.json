@@ -21,7 +21,11 @@
                 "adapter speed 1000"
             ],
             "gdbPath": "arm-none-eabi-gdb", //设置GDB可执行文件路径
-            "runToEntryPoint": "main"   //设置调试程序运行到main函数入口点
+            "runToEntryPoint": "main",   //设置调试程序运行到main函数入口点
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 4
+            },
         },
     ]
 }

@@ -4,7 +4,7 @@
 
 FreeRTOS 的原理、术语、源码关系、自测题和逐步移植学习记录见 [FreeRTOS 学习与移植笔记](FreeRTOS学习.md)。本 README 继续作为固件工程状态、构建方法和验收结果的入口。
 
-裸机程序已经通过编译、链接和 ELF 静态检查，并已由用户在真实硬件上完成 CMSIS-DAP + OpenOCD 下载、PB5 红灯闪烁和 GDB 断点调试验证。FreeRTOS 调度器、Key Task → Queue → LED Task、USART1 TX DMA1 Channel 4、有界Serial TX Queue、USART1 RX DMA1 Channel 5循环接收、USART IDLE通知和原始字节回显均已完成构建与真实硬件验证。200字节加100字节的分批输入曾验证128字节发送分块和RX缓冲区回绕；随后加入的Console已通过行缓冲、CR/LF/CRLF、退格、`help`/`version`/`task`/`heap`、未知命令、空行、同批多命令及63/64字符边界恢复验收。TIM6 10 kHz运行时间计数、任务状态/栈/CPU表和24 KiB FreeRTOS Heap诊断也已形成闭环。ADC1已完成PC1/ADC1_IN11板载电位器和ADC1_IN16内部温度传感器的顺序采样：单个ADC Task每1 s软件触发并轮询EOC，再直接调用`AppSerial_Write()`复用现有Serial TX Queue，没有增加ADC Queue或额外处理Task。当前先完成P1 bxCAN所需的电气、位时序和测试帧准备，不提前加入W5500、MQTT、FTP或Bootloader。Codex只提供讲解、只读检查并维护Markdown，不直接修改固件代码。
+裸机程序已经通过编译、链接和 ELF 静态检查，并已由用户在真实硬件上完成 CMSIS-DAP + OpenOCD 下载、PB5 红灯闪烁和 GDB 断点调试验证。FreeRTOS 调度器、Key Task → Queue → LED Task、USART1 TX DMA1 Channel 4、有界Serial TX Queue、USART1 RX DMA1 Channel 5循环接收、USART IDLE通知和原始字节回显均已完成构建与真实硬件验证。200字节加100字节的分批输入曾验证128字节发送分块和RX缓冲区回绕；随后加入的Console已通过行缓冲、CR/LF/CRLF、退格、`help`/`version`/`task`/`heap`、未知命令、空行、同批多命令及63/64字符边界恢复验收。TIM6 10 kHz运行时间计数、任务状态/栈/CPU表和24 KiB FreeRTOS Heap诊断也已形成闭环。ADC1已完成PC1/ADC1_IN11板载电位器和ADC1_IN16内部温度传感器的顺序采样。CAN1使用PB8/PB9重映射和500 kbit/s位时序，29位Classic CAN扩展数据帧精确过滤、发送邮箱、FIFO0接收中断、CAN RX Queue、真实ADC上报、红灯/蜂鸣器控制、应用层ACK、错误状态观测和`CAN_ABOM`自动Bus-off恢复均已完成实机验收；连续双向收发2小时未发现资源泄漏、异常复位或不可恢复通信中断。当前进入W5500 SPI通信基线，只先完成SPI2、复位、官方驱动适配和版本寄存器读回，不提前加入TCP、MQTT、FTP或Bootloader。Codex只提供讲解、只读检查并维护Markdown，不直接修改固件代码。
 
 ## 目录
 
@@ -16,6 +16,7 @@ FreeRTOS 的原理、术语、源码关系、自测题和逐步移植学习记�
 - [配置与构建](#配置与构建)
 - [构建输出](#构建输出)
 - [下载与实机验收](#下载与实机验收)
+- [bxCAN错误状态与Bus-off管理](#bxcan错误状态与bus-off管理)
 - [固件技术路线](#固件技术路线)
 - [FreeRTOS V11.3.0 学习型移植记录](#freertos-v1130-学习型移植记录)
 - [当前范围与限制](#当前范围与限制)
@@ -33,6 +34,8 @@ FreeRTOS 的原理、术语、源码关系、自测题和逐步移植学习记�
 | 串口Console | 固定有界行缓冲；CR/LF/CRLF与退格处理；`help`、`version`、`task`、`heap`只读命令 | 命令分发、行边界恢复和诊断输出均已实机验证 |
 | 运行诊断 | `vTaskListTasks()`、`vTaskGetRunTimeStatistics()`、TIM6 10 kHz计数和`heap_4`余量查询 | 状态、优先级、栈高水位、CPU累计占用及Heap当前/历史余量已验证 |
 | ADC采样 | ADC1；PC1/ADC1_IN11板载电位器和ADC1_IN16内部温度传感器；软件触发单次转换、Task轮询EOC | 单个ADC Task每1 s顺序采样两通道，并通过`AppSerial_Write()`复用现有Serial TX Queue；已完成构建与实机验证 |
+| CAN最小闭环 | CAN1，PB8/PB9重映射，29位Classic CAN扩展数据帧，500 kbit/s | 基础收发、真实ADC上报、控制、应用层ACK、错误状态、自动Bus-off恢复和2小时稳定性均已完成实机验收 |
+| W5500通信基线 | SPI2：PB13/PB14/PB15；PG9/PG8/PG15：CS/INT/RST | 当前步骤为官方驱动最小接入、硬件复位和`VERSIONR`读回；Socket、TCP和MQTT尚未开始 |
 | 交叉编译器 | GNU Tools for STM32 14.3.1，`arm-none-eabi-gcc` | 已验证 |
 | 构建配置 | CMake 4.3.1 | 已验证 |
 | 构建执行 | GNU Make 4.4.1 | 已验证 |
@@ -122,6 +125,7 @@ firmware/
 - 调试下载使用 CMSIS-DAP，通过开发板 SWD 接口连接。
 - 板载CH340G连接USART1：PA9为TX，PA10为RX，当前串口参数为115200、8-N-1、无流控。
 - STM32F103固定DMA映射中，USART1_TX使用DMA1 Channel 4普通模式，USART1_RX使用DMA1 Channel 5循环模式。
+- CAN1使用PB8/CAN_RX和PB9/CAN_TX，启用`GPIO_Remap1_CAN1`；bxCAN时钟来自PCLK1=36 MHz，500 kbit/s位时序使用Prescaler=4、BS1=15 TQ、BS2=2 TQ和SJW=1 TQ。
 
 ## 构建环境检查
 
@@ -449,6 +453,50 @@ openocd -f interface/cmsis-dap.cfg -c "transport select swd" -f target/stm32f1x.
 - ADC Task大部分时间阻塞在周期延时中；任务状态、CPU、栈余量和24 KiB FreeRTOS Heap验收通过，未观察到持续内存下降、乱码或异常复位。
 - 本阶段只验收原始值，不把内部温度传感器典型参数换算结果宣称为精确摄氏温度。
 
+### bxCAN最小闭环实机验收
+
+用户已在真实硬件上确认29位Classic CAN扩展数据帧的周期上报、Windows控制请求和应用层ACK均与`docs/protocol.md`一致；ADC帧使用ADC Task发布的真实最新样本，CAN Task未直接访问ADC BSP。无ACK/Error Passive、错误状态观测、通信恢复、发送超时与Queue异常可观察性已经完成回归；`CAN_ABOM`启用后恢复行为符合设计。连续双向收发2小时期间未观察到资源泄漏、异常复位或不可恢复通信中断，P1据此关闭。
+
+## bxCAN错误状态与Bus-off管理
+
+bxCAN使用发送错误计数器TEC和接收错误计数器REC实施CAN协议的故障限制。错误原因由`CAN_ESR.LEC`表示，节点当前严重程度由`EWGF`、`EPVF`和`BOFF`表示；“最近发生了哪种错误”和“节点现在处于什么状态”是两个不同维度。
+
+```text
+正常通信 / Error Active
+        ↓ TEC或REC达到96
+Error Warning（仍属于Error Active，只是警告标志置位）
+        ↓ TEC或REC超过127
+Error Passive
+        ↓ 仅发送错误继续恶化，TEC超过255
+Bus-off（控制器退出总线）
+```
+
+| 状态或标志 | 硬件条件 | 含义 |
+| --- | --- | --- |
+| Error Active | TEC和REC均未超过127 | 节点能够正常参与通信，并可发送主动错误标志 |
+| Error Warning / `EWGF` | TEC或REC大于等于96 | 错误计数已经接近被动门限，但节点仍是Error Active |
+| Error Passive / `EPVF` | TEC或REC大于127 | 节点仍可通信，但错误处理行为受到限制，避免故障节点持续干扰总线 |
+| Bus-off / `BOFF` | 九位TEC超过255 | 仅由发送错误触发；控制器退出总线，不再发送数据或硬件ACK |
+
+Error Passive中的“Passive”描述的是错误报告方式，不是禁止发送普通报文。节点仍可参与仲裁、发送和接收数据帧，也会对正确接收的帧发送硬件ACK；区别是它检测到错误时只能发送由6个隐性位组成的Passive Error Flag，不能像Error Active节点那样用显性位主动破坏当前错误帧。Error Passive节点在一次发送后还必须经过额外的Suspend Transmission等待，才能主动发起下一帧。真正完全退出总线的是Bus-off。
+
+CAN故障限制还有一个重要例外：当发送节点已经处于Error Passive，仅因为没有检测到显性ACK而产生Acknowledgment Error，并且发送Passive Error Flag期间也没有检测到显性位时，TEC不再因这次错误增加。因此单节点运行或唯一的分析仪处于Listen Only时，节点可能停留在Error Passive而不会仅凭无ACK进入Bus-off；无ACK测试可以验证ACK错误和Error Passive，但不能作为必然触发Bus-off的测试方法。
+
+SPL的`CAN_GetLSBTransmitErrorCounter()`只能读取九位TEC的低八位，因此TEC溢出后的Bus-off判断必须以`BOFF`标志为准，不能只看该函数返回值。成功收发会按CAN规则降低对应错误计数；计数变化不是简单的“每次错误固定加1”。
+
+`CAN_InitTypeDef.CAN_ABOM`控制Automatic Bus-Off Management：
+
+- `CAN_ABOM = DISABLE`：硬件不会自动退出Bus-off，需要软件执行恢复流程。
+- `CAN_ABOM = ENABLE`：bxCAN在Bus-off后监测总线，检测到128次“连续11个隐性位”后按协议自动恢复。
+
+P1错误管理的目标选择是：
+
+```c
+xCanInit.CAN_ABOM = ENABLE;
+```
+
+自动恢复由bxCAN硬件完成；CAN Task只负责读取错误快照、记录状态转换并在Bus-off期间停止提交新报文，不在CAN错误ISR中重新初始化外设。当前`bsp_can.c`已经设置为`ENABLE`，并已通过集中实机测试确认异常解除后能够恢复通信。
+
 ## 固件技术路线
 
 ```text
@@ -470,18 +518,24 @@ P0  Task状态/栈/CPU与Heap诊断（已完成实机验证）
  ↓
 P0  ADC1双通道软件触发采样 → Task轮询EOC → Serial TX Queue（已完成实机验证）
  ↓
-P0  CAN供电、终端电阻、位时序和测试帧确认（下一步）
+P1  bxCAN + Windows CAN分析仪最小双向闭环（已完成实机验证）
  ↓
-P1  bxCAN + Windows CAN分析仪最小双向闭环
+P1  ADC最新样本、错误状态与Bus-off恢复（已完成实机验收）
  ↓
-P2  W5500 + TCP Socket + MQTT 3.1.1 + 业务心跳
+P1  2小时稳定性测试与阶段基线（已完成）
  ↓
-P3  FTP流式下载 + W25Q64暂存 + MD5校验
+P2  W5500 SPI2 + 复位 + 官方驱动适配 + VERSIONR读回（下一步）
  ↓
-P4  Bootloader + 内部Flash更新 + 断电恢复
+P2  单Socket TCP + Windows侧EMQX + MQTT 3.1.1 + 业务心跳
+ ↓
+P3  C# + WPF + MVVM + MQTTnet Dashboard最小闭环
+ ↓
+P4  Windows FTP流式下载 + W25Q64暂存 + MD5校验
+ ↓
+P5  Bootloader + 内部Flash更新 + 断电恢复
 ```
 
-串口TX/RX硬件通路、Console、FreeRTOS运行诊断和ADC1低频双通道采样已经分别完成验证。ADC阶段采用单个ADC Task顺序读取两个ADC1通道，并直接复用现有Serial TX Queue，没有为1 Hz采样增加ADC Queue或额外处理Task。Binary Semaphore与Mutex因当前不存在需要它们解决的真实事件同步或共享资源问题而延期；当前先完成P1 bxCAN的电气、位时序和测试帧准备，再进入CAN实现，不把网络功能提前混入。
+串口TX/RX硬件通路、Console、FreeRTOS运行诊断、ADC1低频双通道采样和P1 CAN最小闭环已经分别完成实机验证。ADC Task保持ADC1唯一所有者和最新样本Queue唯一写者，CAN Task通过零等待`xQueuePeek()`读取完整快照并编码协议帧；错误状态观测、`CAN_ABOM`自动恢复和2小时稳定性也已验收。下一步建立W5500 SPI通信基线，先证明芯片复位与寄存器访问可靠，再继续PHY、TCP和MQTT。
 
 ## FreeRTOS V11.3.0 学习型移植记录
 
@@ -530,6 +584,8 @@ PB5 红灯约每 2000 ms 翻转一次
 | 13. 最小Console行协议 | 学习有界行缓冲、CR/LF/CRLF、退格、超长恢复和只读命令分发 | `help`、`version`、错误响应及63/64字符边界均已完成构建与实机验收 |
 | 14. FreeRTOS运行与Heap诊断 | 学习任务状态、栈高水位、运行时间统计及Heap当前/历史余量 | `task`、`heap`、TIM6回绕和重复查询稳定性均已完成构建与实机验收 |
 | 15. ADC1双通道周期采样 | 学习ADC时钟、采样时间、软件触发、EOC轮询和单一外设所有权 | PC1/ADC1_IN11电位器与ADC1_IN16内部温度通道已通过构建和实机验证；单ADC Task直接复用现有Serial TX Queue |
+| 16. bxCAN最小双向闭环 | 学习位时序、过滤器、邮箱、硬件ACK、FIFO0 ISR、Queue和应用层ACK | 真实ADC上报、控制、ACK、错误状态、自动恢复和2小时稳定性均已完成实机验收 |
+| 17. W5500 SPI通信基线 | 学习SPI时序、片选边界、硬件复位、驱动回调和外设所有权 | 下一步：最小接入官方驱动并稳定读回`VERSIONR = 0x04` |
 
 每完成一步，都应把实际命令、结果、遇到的问题和验证结论补充到本节，不能提前把计划写成已完成结果。
 
@@ -554,9 +610,9 @@ Task状态、栈、CPU与Heap诊断（已完成实机验证）
     ↓
 ADC1双通道软件触发、Task轮询EOC和周期串口报告（已完成实机验证）
     ↓
-CAN供电、终端电阻、位时序和P1测试帧确认（下一步）
+P1 bxCAN + Windows CAN分析仪最小双向闭环（已完成实机验收）
     ↓
-P1 bxCAN + Windows CAN分析仪最小双向闭环
+W5500 SPI2、硬件复位、官方驱动适配和VERSIONR读回（下一步）
 ```
 
 历史 `User/Key/`阻塞扫描示例已由分层后的 `User/bsp/key/`和 `User/app/key/`替代，历史EXTI与串口示例不直接加入当前CMake。`User/bsp/usart/`、`User/app/serial/`、`User/app/console/`、`User/app/diagnostics/`、`User/bsp/timer/`、`User/bsp/adc/`和 `User/app/adc/`已经建立；TX方向保持Serial TX Task为唯一所有者，RX方向由循环DMA、USART IDLE通知和Serial RX Task协作。ADC1由单个ADC Task独占，低频原始值报告直接复用私有Serial TX Queue。Binary Semaphore和Mutex保留为知识储备，等出现真实事件同步或共享资源后再启用。具体原理和阶段验收见 [FreeRTOS学习.md](FreeRTOS学习.md#25-第二阶段按键queuesemaphore-与-mutex)、[USART1 TX DMA 与 Task Notification](FreeRTOS学习.md#26-usart1-tx-dma-与-task-notification)、[USART1 RX循环DMA、IDLE与Task Notification](FreeRTOS学习.md#27-usart1-rx循环dmaidle与task-notification)、[最小Console行协议与Serial RX Task接入](FreeRTOS学习.md#28-最小console行协议与serial-rx-task接入)、[FreeRTOS任务运行时间与Heap诊断](FreeRTOS学习.md#29-freertos任务运行时间与heap诊断)和 [ADC1双通道低频采样与串口发送复用](FreeRTOS学习.md#30-adc1双通道低频采样与串口发送复用)。
@@ -892,7 +948,7 @@ FreeRTOS 提供多种动态内存实现，应用一次只能选择一种：
 - Serial TX Queue长度为4，单条消息上限为512字节；当前 `heap_4`总量为24 KiB。外部RAM尚未接入链接脚本或FreeRTOS Heap。
 - ADC1双通道周期采样已经完成构建与实机验证：PC1/ADC1_IN11读取板载电位器，ADC1_IN16读取内部温度传感器；单个ADC Task使用软件触发和EOC轮询，并直接复用现有Serial TX Queue。
 - 当前ADC只输出12位原始值，未启用扫描连续转换、ADC中断、DMA或摄氏温度校准；`BspAdc_ReadRaw()`不支持并发调用，由ADC Task独占ADC1。
-- 尚未实现 CAN、W5500、TCP、MQTT、FTP、W25Q64 和 Bootloader。
+- CAN1真实ADC上报、控制、应用层ACK、错误状态观测、自动Bus-off恢复和2小时稳定性均已完成实机验收。W5500 SPI通信基线是当前下一步；TCP、MQTT、FTP、W25Q64和Bootloader尚未实现。
 - 不在固件源码或 README 中保存真实 MQTT/FTP 用户名、密码、证书私钥或设备唯一凭据。
 - `build/` 中的 ELF、HEX、BIN、MAP 和中间文件不提交 Git。
 

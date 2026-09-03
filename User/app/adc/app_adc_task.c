@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "FreeRTOS.h"
+#include "queue.h"
 #include "task.h"
 
 #include "app_serial_task.h"
@@ -20,10 +21,20 @@ static TaskHandle_t s_xAdcTaskHandle = NULL;    //任务句柄
 static volatile uint32_t s_ulAdcReadFailureCount = 0U;
 static volatile uint32_t s_ulAdcReportDropCount = 0U;
 
+
+#define APP_ADC_SAMPLE_QUEUE_LENGTH    1U
+
+static QueueHandle_t s_xAdcSampleQueue = NULL;  //ADC样本队列句柄
+
+/*
+ * 长度为1的Queue使用xQueueOverwrite发布最新值。
+ * 正常情况下overwrite不会因为Queue已满而失败。
+ */
+static volatile uint32_t s_ulAdcSamplePublishFailureCount = 0U;
+
 static void prvAdcTask(void *pvParameters)
 {
-    uint16_t usPotentiometerRaw;    //电位器原始ADC值
-    uint16_t usTemperatureRaw;      //温度传感器原始ADC值
+    AppAdcSample_t xSample;
     char cReport[APP_ADC_REPORT_BUFFER_SIZE];
     int iReportLength;
 
@@ -33,28 +44,59 @@ static void prvAdcTask(void *pvParameters)
     {
         /*
          * 启动后先阻塞1秒，让启动信息优先通过串口发送。
-         * ADC Task绝大多数时间处于Blocked状态。
+         * ADC Task是ADC1的唯一所有者。
          */
         vTaskDelay(pdMS_TO_TICKS(APP_ADC_SAMPLE_PERIOD_MS));
 
+        /*
+         * 每轮先清空整个样本。
+         * 如果本次读取失败，有效标志保持false。
+         */
+        xSample = (AppAdcSample_t){0};
+
         if (BspAdc_ReadRaw(
-                &usPotentiometerRaw,
-                &usTemperatureRaw) == false)
+                &xSample.usPotentiometerRaw,
+                &xSample.usTemperatureRaw) == true)
+        {
+            xSample.xPotentiometerValid = true;
+            xSample.xTemperatureValid = true;
+        }
+        else
         {
             s_ulAdcReadFailureCount++;
-            continue;
         }
 
         /*
-         * 第一轮只输出原始ADC值，先验证采样链路。
-         * 温度换算涉及芯片典型参数和个体误差，留到原始值验收后处理。
+         * Queue长度必须为1。
+         * 新样本直接覆盖旧样本，不积压已经失去实时价值的数据。
+         *
+         * 读取失败时也发布无效样本，防止CAN Task永远把上一次
+         * 成功采样误认为当前仍然有效。
          */
+        if (xQueueOverwrite(
+                s_xAdcSampleQueue,
+                &xSample) != pdPASS)
+        {
+            s_ulAdcSamplePublishFailureCount++;
+        }
+
+        /*
+         * 串口只打印成功取得的完整样本。
+         * Queue发布放在snprintf和串口发送之前，避免串口路径
+         * 延迟CAN Task取得最新样本。
+         */
+        if ((xSample.xPotentiometerValid == false) ||
+            (xSample.xTemperatureValid == false))
+        {
+            continue;
+        }
+
         iReportLength = snprintf(
             cReport,
             sizeof(cReport),
             "ADC: potentiometer_raw=%u, temperature_raw=%u\r\n",
-            (unsigned int)usPotentiometerRaw,
-            (unsigned int)usTemperatureRaw);
+            (unsigned int)xSample.usPotentiometerRaw,
+            (unsigned int)xSample.usTemperatureRaw);
 
         if ((iReportLength <= 0) ||
             (iReportLength >= (int)sizeof(cReport)))
@@ -63,10 +105,6 @@ static void prvAdcTask(void *pvParameters)
             continue;
         }
 
-        /*
-         * AppSerial_Write会把内容复制进现有Serial TX Queue，
-         * 因此ADC Task不需要等待DMA发送结束。
-         */
         if (AppSerial_Write(
                 (const uint8_t *)cReport,
                 (uint16_t)iReportLength) == false)
@@ -80,7 +118,17 @@ bool AppAdcTask_Create(void)
 {
     BaseType_t xCreateResult;
 
-    if (s_xAdcTaskHandle != NULL)
+    if ((s_xAdcTaskHandle != NULL) ||
+        (s_xAdcSampleQueue != NULL))
+    {
+        return false;
+    }
+
+    s_xAdcSampleQueue = xQueueCreate(
+        APP_ADC_SAMPLE_QUEUE_LENGTH,
+        sizeof(AppAdcSample_t));
+
+    if (s_xAdcSampleQueue == NULL)
     {
         return false;
     }
@@ -95,9 +143,32 @@ bool AppAdcTask_Create(void)
 
     if (xCreateResult != pdPASS)
     {
+        vQueueDelete(s_xAdcSampleQueue);
+        s_xAdcSampleQueue = NULL;
         s_xAdcTaskHandle = NULL;
         return false;
     }
 
     return true;
+}
+
+bool AppAdc_TryReadLatestSample(AppAdcSample_t *pxSample)
+{
+    if ((pxSample == NULL) ||
+        (s_xAdcSampleQueue == NULL))
+    {
+        return false;
+    }
+
+    /*
+     * 使用Peek而不是Receive：
+     * Peek复制最新样本但不把它从Queue删除，因此在下一次ADC采样
+     * 到来之前，CAN Task仍然可以取得当前最新的完整样本。
+     *
+     * 等待时间为0，CAN Task绝不会在这里等待ADC Task。
+     */
+    return xQueuePeek(
+               s_xAdcSampleQueue,
+               pxSample,
+               0U) == pdPASS;
 }
